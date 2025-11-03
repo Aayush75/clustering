@@ -37,6 +37,7 @@ class Config:
     # TEMI clustering settings
     NUM_CLUSTERS = 100  # K value for clustering
     NUM_HEADS = 16  # Number of clustering heads for ensemble
+    HIDDEN_DIM = 2048  # Hidden dimension for clustering heads
     KNN_NEIGHBORS = 50  # Number of nearest neighbors to consider
     
     # Loss function parameters
@@ -47,16 +48,16 @@ class Config:
     CENTER_MOMENTUM = 0.9  # Momentum for center update
     PROBS_MOMENTUM = 0.9  # Momentum for probability distribution
     BETA = 0.6  # Beta parameter for weighted MI
-    REGULARIZATION_WEIGHT = 0.5  # Alpha parameter for entropy regularization
-    USE_REGULARIZATION = False  # Whether to use entropy regularization
+    REGULARIZATION_WEIGHT = 5.0  # Alpha parameter for entropy regularization (higher for better cluster balance)
+    USE_REGULARIZATION = True  # Whether to use entropy regularization - MUST be True
     
     # Training settings
     BATCH_SIZE = 256  # Batch size for training
     NUM_EPOCHS = 100  # Total number of training epochs
-    LEARNING_RATE = 1e-4  # Initial learning rate
-    MIN_LR = 1e-4  # Minimum learning rate
-    WARMUP_EPOCHS = 20  # Number of epochs for learning rate warmup
-    WEIGHT_DECAY = 0.04  # Weight decay for optimizer
+    LEARNING_RATE = 1e-3  # Initial learning rate (10x higher for better convergence)
+    MIN_LR = 1e-5  # Minimum learning rate
+    WARMUP_EPOCHS = 10  # Number of epochs for learning rate warmup (shorter)
+    WEIGHT_DECAY = 1e-5  # Weight decay for optimizer (lower to prevent over-regularization)
     MOMENTUM_TEACHER = 0.996  # EMA momentum for teacher network
     
     # Optimizer settings

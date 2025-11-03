@@ -29,35 +29,46 @@ def sim_weight(p1, p2, gamma=1.0):
     return (p1 * p2).pow(gamma).sum(dim=-1)
 
 
-def beta_mi(p1, p2, pk, beta=1.0, clip_min=-torch.inf):
+def beta_mi(p1, p2, pk, beta=1.0, clip_min=-100.0):
     """
-    Compute beta-weighted mutual information.
+    Compute beta-weighted mutual information according to TEMI paper.
     
-    This is the core of the TEMI loss, measuring pointwise mutual information
-    with a beta exponent and marginal probability normalization.
+    Implements: I_beta(p1, p2) = sum_k [(p1_k * p2_k)^beta / pk^beta] * log(p1_k * p2_k / pk)
+    This measures pointwise mutual information with beta weighting.
     
     Args:
         p1: First probability distribution (batch_size, num_clusters)
         p2: Second probability distribution (batch_size, num_clusters)
         pk: Marginal cluster probabilities (1, num_clusters)
-        beta: Beta exponent for MI
+        beta: Beta exponent for MI weighting (0 < beta <= 1)
         clip_min: Minimum value for log (for numerical stability)
         
     Returns:
-        Negative beta-MI (batch_size,)
+        Negative beta-MI (batch_size,) for loss minimization
     """
-    # Add small epsilon for numerical stability
+    # Add epsilon for numerical stability
     eps = 1e-8
-    pk = pk.clamp(min=eps)
     
-    # Compute beta-weighted expected MI: E[(p1 * p2)^beta / pk]
-    beta_emi = (((p1 * p2).clamp(min=eps) ** beta) / pk).sum(dim=-1)
+    # Ensure probabilities are valid
+    p1 = p1.clamp(min=eps, max=1.0)
+    p2 = p2.clamp(min=eps, max=1.0)
+    pk = pk.clamp(min=eps, max=1.0)
     
-    # Take log to get pointwise MI
-    beta_pmi = beta_emi.clamp(min=eps).log().clamp(min=clip_min)
+    # Compute joint probability: p(i,j) = p1(i) * p2(j)
+    joint = (p1 * p2).clamp(min=eps)
+    
+    # Compute PMI: log(p(i,j) / (p(i) * p(j))) = log(joint / pk)
+    pmi = (joint / pk).clamp(min=eps).log().clamp(min=clip_min, max=100.0)
+    
+    # Compute beta-weighted MI: (joint^beta / pk^(beta-1)) * PMI
+    # Simplified: joint^beta / pk^(beta-1) = (joint/pk)^beta * pk
+    weight = ((joint / pk).clamp(min=eps) ** beta) * pk
+    
+    # Sum over clusters to get I_beta
+    beta_mi_value = (weight * pmi).sum(dim=-1)
     
     # Return negative for loss minimization
-    return -beta_pmi
+    return -beta_mi_value
 
 
 class TEMILoss(nn.Module):
@@ -353,14 +364,20 @@ class MultiHeadTEMILoss(nn.Module):
             total_loss += loss.mean()
             valid_heads += 1
         
-        # Optional entropy regularization
+        # Optional entropy regularization to prevent cluster collapse
+        # We MINIMIZE negative entropy, which is equivalent to MAXIMIZING entropy
         if self.use_reg:
             reg_loss = 0.0
             for student_probs in student_probs_list:
-                # Self-entropy: H(p) = -sum(p * log(p))
+                # Batch-wise marginal distribution
+                batch_marginal = student_probs.mean(dim=0)
                 eps = 1e-8
-                entropy = -(student_probs * (student_probs + eps).log()).sum(dim=-1)
-                reg_loss += entropy.mean()
+                batch_marginal = batch_marginal.clamp(min=eps)
+                
+                # Negative entropy of batch marginal: -H(p) = sum(p * log(p))
+                # Minimizing this maximizes entropy, encouraging uniform cluster distribution
+                neg_entropy = (batch_marginal * batch_marginal.log()).sum()
+                reg_loss += neg_entropy
             
             total_loss = total_loss + self.alpha * reg_loss / num_heads
         

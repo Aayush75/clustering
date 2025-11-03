@@ -35,10 +35,12 @@ class ClusteringHead(nn.Module):
             # Simple linear head
             self.head = nn.Linear(input_dim, num_clusters)
         else:
-            # MLP head with one hidden layer
+            # MLP head with batch norm and dropout for better training
             self.head = nn.Sequential(
                 nn.Linear(input_dim, hidden_dim),
+                nn.BatchNorm1d(hidden_dim),
                 nn.GELU(),
+                nn.Dropout(0.1),
                 nn.Linear(hidden_dim, num_clusters)
             )
         
@@ -88,13 +90,14 @@ class MultiHeadClusteringModel(nn.Module):
         self.num_heads = config.NUM_HEADS
         self.embedding_dim = config.EMBEDDING_DIM
         self.num_clusters = config.NUM_CLUSTERS
+        self.hidden_dim = config.HIDDEN_DIM
         
-        # Create multiple clustering heads
+        # Create multiple clustering heads with MLP architecture
         self.heads = nn.ModuleList([
             ClusteringHead(
                 input_dim=self.embedding_dim,
                 num_clusters=self.num_clusters,
-                hidden_dim=None  # Use linear heads for efficiency
+                hidden_dim=self.hidden_dim  # Use MLP heads for better capacity
             )
             for _ in range(self.num_heads)
         ])
