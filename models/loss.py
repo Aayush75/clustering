@@ -46,11 +46,15 @@ def beta_mi(p1, p2, pk, beta=1.0, clip_min=-torch.inf):
     Returns:
         Negative beta-MI (batch_size,)
     """
+    # Add small epsilon for numerical stability
+    eps = 1e-8
+    pk = pk.clamp(min=eps)
+    
     # Compute beta-weighted expected MI: E[(p1 * p2)^beta / pk]
-    beta_emi = (((p1 * p2) ** beta) / pk).sum(dim=-1)
+    beta_emi = (((p1 * p2).clamp(min=eps) ** beta) / pk).sum(dim=-1)
     
     # Take log to get pointwise MI
-    beta_pmi = beta_emi.log().clamp(min=clip_min)
+    beta_pmi = beta_emi.clamp(min=eps).log().clamp(min=clip_min)
     
     # Return negative for loss minimization
     return -beta_pmi
@@ -179,7 +183,11 @@ class TEMILoss(nn.Module):
             # Compute similarity weight between teacher predictions
             # This measures consistency of the teacher across the batch
             weight = sim_weight(teacher_probs, teacher_probs)
-            weight = weight / weight.sum()
+            weight_sum = weight.sum()
+            if weight_sum > 1e-8:
+                weight = weight / weight_sum
+            else:
+                weight = torch.ones_like(weight) / weight.shape[0]
             
             # Compute weighted beta-MI loss
             loss = weight * beta_mi(
@@ -187,8 +195,13 @@ class TEMILoss(nn.Module):
                 teacher_probs,
                 pk,
                 beta=self.beta,
-                clip_min=-torch.inf if self.beta > 0 else 0
+                clip_min=-100.0  # Prevent extreme values
             )
+            
+            # Check for NaN and handle gracefully
+            if torch.isnan(loss).any():
+                print(f"Warning: NaN detected in loss for head {head_idx}, skipping")
+                continue
             
             total_loss += loss.mean()
         
@@ -302,15 +315,21 @@ class MultiHeadTEMILoss(nn.Module):
                 pair_count += 1
         
         # Normalize weight
-        if pair_count > 0:
+        if pair_count > 0 and isinstance(total_weight, torch.Tensor):
             avg_weight = total_weight / pair_count
-            if isinstance(avg_weight, torch.Tensor):
-                avg_weight = avg_weight / avg_weight.sum()
+            weight_sum = avg_weight.sum()
+            if weight_sum > 1e-8:
+                avg_weight = avg_weight / weight_sum
+            else:
+                avg_weight = torch.ones_like(avg_weight) / avg_weight.shape[0]
         else:
-            avg_weight = torch.ones(1).to(teacher_outputs[0].device)
+            # Use uniform weight if no pairs
+            batch_size = teacher_probs_list[0].shape[0]
+            avg_weight = torch.ones(batch_size).to(teacher_outputs[0].device) / batch_size
         
         # Compute MI loss for each head
         total_loss = 0.0
+        valid_heads = 0
         
         for head_idx in range(num_heads):
             student_probs = student_probs_list[head_idx]
@@ -323,20 +342,31 @@ class MultiHeadTEMILoss(nn.Module):
                 teacher_probs,
                 pk,
                 beta=self.beta,
-                clip_min=-torch.inf
+                clip_min=-100.0  # Prevent extreme values
             )
             
+            # Check for NaN
+            if torch.isnan(loss).any():
+                print(f"Warning: NaN detected in loss for head {head_idx}, skipping")
+                continue
+            
             total_loss += loss.mean()
+            valid_heads += 1
         
         # Optional entropy regularization
         if self.use_reg:
             reg_loss = 0.0
             for student_probs in student_probs_list:
                 # Self-entropy: H(p) = -sum(p * log(p))
-                entropy = -(student_probs * student_probs.log()).sum(dim=-1)
+                eps = 1e-8
+                entropy = -(student_probs * (student_probs + eps).log()).sum(dim=-1)
                 reg_loss += entropy.mean()
             
             total_loss = total_loss + self.alpha * reg_loss / num_heads
         
-        # Average over heads
-        return total_loss / num_heads
+        # Average over valid heads (avoid division by zero)
+        if valid_heads > 0:
+            return total_loss / valid_heads
+        else:
+            print("Warning: All heads produced NaN, returning zero loss")
+            return torch.tensor(0.0, device=student_probs_list[0].device, requires_grad=True)

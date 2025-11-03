@@ -49,7 +49,8 @@ class ClusteringHead(nn.Module):
         """Initialize weights using truncated normal distribution."""
         for m in self.modules():
             if isinstance(m, nn.Linear):
-                nn.init.trunc_normal_(m.weight, std=0.02)
+                # Use smaller std for better stability
+                nn.init.trunc_normal_(m.weight, std=0.01)
                 if m.bias is not None:
                     nn.init.constant_(m.bias, 0)
     

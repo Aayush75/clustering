@@ -131,16 +131,26 @@ class Trainer:
             # Compute loss
             loss = self.loss_fn(student_outputs, teacher_outputs, epoch)
             
+            # Check for NaN or inf
+            if not torch.isfinite(loss):
+                print(f"\nWarning: Non-finite loss detected at batch {batch_idx}, skipping batch")
+                continue
+            
             # Backward pass
             self.optimizer.zero_grad()
             loss.backward()
             
             # Gradient clipping
             if self.config.CLIP_GRAD is not None:
-                torch.nn.utils.clip_grad_norm_(
+                grad_norm = torch.nn.utils.clip_grad_norm_(
                     self.model.student.parameters(),
                     self.config.CLIP_GRAD
                 )
+                # Check for exploding gradients
+                if not torch.isfinite(grad_norm):
+                    print(f"\nWarning: Non-finite gradients at batch {batch_idx}, skipping batch")
+                    self.optimizer.zero_grad()
+                    continue
             
             self.optimizer.step()
             
@@ -148,22 +158,27 @@ class Trainer:
             self.model.update_teacher()
             
             # Track loss
-            total_loss += loss.item()
+            loss_value = loss.item()
+            total_loss += loss_value
             num_batches += 1
             
             # Update progress bar
-            pbar.set_postfix({
-                'loss': f'{loss.item():.4f}',
-                'avg_loss': f'{total_loss/num_batches:.4f}'
-            })
+            if num_batches > 0:
+                pbar.set_postfix({
+                    'loss': f'{loss_value:.4f}',
+                    'avg_loss': f'{total_loss/num_batches:.4f}'
+                })
+            else:
+                pbar.set_postfix({'loss': 'skipped'})
             
             # Log to TensorBoard
             if self.writer is not None and batch_idx % self.config.LOG_FREQ == 0:
                 global_step = epoch * len(self.train_loader) + batch_idx
-                self.writer.add_scalar('train/loss_step', loss.item(), global_step)
+                self.writer.add_scalar('train/loss_step', loss_value, global_step)
                 self.writer.add_scalar('train/lr', self.optimizer.param_groups[0]['lr'], global_step)
         
-        avg_loss = total_loss / num_batches
+        # Compute average loss (handle case where all batches were skipped)
+        avg_loss = total_loss / max(num_batches, 1)
         
         # Log epoch statistics
         if self.writer is not None:
