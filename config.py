@@ -42,13 +42,13 @@ class Config:
     
     # Loss function parameters
     STUDENT_TEMP = 0.1  # Student temperature for softmax
-    TEACHER_TEMP = 0.05  # Final teacher temperature
+    TEACHER_TEMP = 0.07  # Final teacher temperature (slightly higher for 100 clusters)
     WARMUP_TEACHER_TEMP = 0.04  # Starting teacher temperature
-    WARMUP_TEACHER_EPOCHS = 20  # Epochs to warmup teacher temperature
+    WARMUP_TEACHER_EPOCHS = 30  # Epochs to warmup teacher temperature (longer warmup)
     CENTER_MOMENTUM = 0.9  # Momentum for center update
-    PROBS_MOMENTUM = 0.9  # Momentum for probability distribution
+    PROBS_MOMENTUM = 0.95  # Momentum for probability distribution (higher for stability)
     BETA = 0.6  # Beta parameter for weighted MI
-    REGULARIZATION_WEIGHT = 5.0  # Alpha parameter for entropy regularization (higher for better cluster balance)
+    REGULARIZATION_WEIGHT = 10.0  # Alpha parameter for entropy regularization (HIGHER for 100 clusters!)
     USE_REGULARIZATION = True  # Whether to use entropy regularization - MUST be True
     
     # Training settings

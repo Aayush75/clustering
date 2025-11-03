@@ -29,46 +29,33 @@ def sim_weight(p1, p2, gamma=1.0):
     return (p1 * p2).pow(gamma).sum(dim=-1)
 
 
-def beta_mi(p1, p2, pk, beta=1.0, clip_min=-100.0):
+def beta_mi(student_probs, teacher_probs, pk, beta=1.0):
     """
-    Compute beta-weighted mutual information according to TEMI paper.
+    Compute cross-entropy distillation loss for clustering.
     
-    Implements: I_beta(p1, p2) = sum_k [(p1_k * p2_k)^beta / pk^beta] * log(p1_k * p2_k / pk)
-    This measures pointwise mutual information with beta weighting.
+    Standard approach: minimize cross-entropy between teacher and student predictions.
+    This is the proven method used in SwAV, DINO, and similar self-supervised methods.
     
     Args:
-        p1: First probability distribution (batch_size, num_clusters)
-        p2: Second probability distribution (batch_size, num_clusters)
-        pk: Marginal cluster probabilities (1, num_clusters)
-        beta: Beta exponent for MI weighting (0 < beta <= 1)
-        clip_min: Minimum value for log (for numerical stability)
+        student_probs: Student probability distribution (batch_size, num_clusters)
+        teacher_probs: Teacher probability distribution (batch_size, num_clusters)
+        pk: Marginal cluster probabilities (1, num_clusters) - for monitoring/centering
+        beta: Not used, kept for API compatibility
         
     Returns:
-        Negative beta-MI (batch_size,) for loss minimization
+        Loss per sample (batch_size,)
     """
-    # Add epsilon for numerical stability
     eps = 1e-8
     
-    # Ensure probabilities are valid
-    p1 = p1.clamp(min=eps, max=1.0)
-    p2 = p2.clamp(min=eps, max=1.0)
-    pk = pk.clamp(min=eps, max=1.0)
+    # Clamp for numerical stability
+    student_probs = student_probs.clamp(min=eps)
+    teacher_probs = teacher_probs.clamp(min=eps)
     
-    # Compute joint probability: p(i,j) = p1(i) * p2(j)
-    joint = (p1 * p2).clamp(min=eps)
+    # Cross-entropy loss: H(teacher, student) = -sum(teacher * log(student))
+    # This encourages student to match teacher's cluster assignments
+    loss = -(teacher_probs * student_probs.log()).sum(dim=-1)
     
-    # Compute PMI: log(p(i,j) / (p(i) * p(j))) = log(joint / pk)
-    pmi = (joint / pk).clamp(min=eps).log().clamp(min=clip_min, max=100.0)
-    
-    # Compute beta-weighted MI: (joint^beta / pk^(beta-1)) * PMI
-    # Simplified: joint^beta / pk^(beta-1) = (joint/pk)^beta * pk
-    weight = ((joint / pk).clamp(min=eps) ** beta) * pk
-    
-    # Sum over clusters to get I_beta
-    beta_mi_value = (weight * pmi).sum(dim=-1)
-    
-    # Return negative for loss minimization
-    return -beta_mi_value
+    return loss
 
 
 class TEMILoss(nn.Module):
@@ -191,22 +178,12 @@ class TEMILoss(nn.Module):
             self.update_marginals(teacher_probs, head_idx)
             pk = self.get_pk(head_idx)
             
-            # Compute similarity weight between teacher predictions
-            # This measures consistency of the teacher across the batch
-            weight = sim_weight(teacher_probs, teacher_probs)
-            weight_sum = weight.sum()
-            if weight_sum > 1e-8:
-                weight = weight / weight_sum
-            else:
-                weight = torch.ones_like(weight) / weight.shape[0]
-            
-            # Compute weighted beta-MI loss
-            loss = weight * beta_mi(
+            # Compute cross-entropy distillation loss
+            loss = beta_mi(
                 student_probs,
                 teacher_probs,
                 pk,
-                beta=self.beta,
-                clip_min=-100.0  # Prevent extreme values
+                beta=self.beta
             )
             
             # Check for NaN and handle gracefully
@@ -315,30 +292,7 @@ class MultiHeadTEMILoss(nn.Module):
         # Update marginals
         self.update_marginals(teacher_probs_list)
         
-        # Compute pairwise weights between all teacher heads
-        total_weight = 0.0
-        pair_count = 0
-        
-        for i in range(num_heads):
-            for j in range(i + 1, num_heads):
-                weight = sim_weight(teacher_probs_list[i], teacher_probs_list[j])
-                total_weight += weight
-                pair_count += 1
-        
-        # Normalize weight
-        if pair_count > 0 and isinstance(total_weight, torch.Tensor):
-            avg_weight = total_weight / pair_count
-            weight_sum = avg_weight.sum()
-            if weight_sum > 1e-8:
-                avg_weight = avg_weight / weight_sum
-            else:
-                avg_weight = torch.ones_like(avg_weight) / avg_weight.shape[0]
-        else:
-            # Use uniform weight if no pairs
-            batch_size = teacher_probs_list[0].shape[0]
-            avg_weight = torch.ones(batch_size).to(teacher_outputs[0].device) / batch_size
-        
-        # Compute MI loss for each head
+        # Compute loss for each head - simple cross-entropy distillation
         total_loss = 0.0
         valid_heads = 0
         
@@ -347,13 +301,12 @@ class MultiHeadTEMILoss(nn.Module):
             teacher_probs = teacher_probs_list[head_idx]
             pk = self.get_pk(head_idx)
             
-            # Weighted beta-MI
-            loss = avg_weight * beta_mi(
+            # Standard cross-entropy distillation
+            loss = beta_mi(
                 student_probs,
                 teacher_probs,
                 pk,
-                beta=self.beta,
-                clip_min=-100.0  # Prevent extreme values
+                beta=self.beta
             )
             
             # Check for NaN
@@ -364,20 +317,22 @@ class MultiHeadTEMILoss(nn.Module):
             total_loss += loss.mean()
             valid_heads += 1
         
-        # Optional entropy regularization to prevent cluster collapse
-        # We MINIMIZE negative entropy, which is equivalent to MAXIMIZING entropy
+        # Entropy regularization to prevent cluster collapse
+        # Encourage uniform distribution over clusters
         if self.use_reg:
             reg_loss = 0.0
-            for student_probs in student_probs_list:
-                # Batch-wise marginal distribution
-                batch_marginal = student_probs.mean(dim=0)
+            for teacher_probs in teacher_probs_list:
+                # Batch-wise marginal distribution (average over batch)
+                batch_marginal = teacher_probs.mean(dim=0)
                 eps = 1e-8
                 batch_marginal = batch_marginal.clamp(min=eps)
                 
-                # Negative entropy of batch marginal: -H(p) = sum(p * log(p))
-                # Minimizing this maximizes entropy, encouraging uniform cluster distribution
-                neg_entropy = (batch_marginal * batch_marginal.log()).sum()
-                reg_loss += neg_entropy
+                # KL divergence from uniform distribution
+                # D_KL(marginal || uniform) = sum(p * log(p * K))
+                # where K is number of clusters
+                uniform_prior = 1.0 / self.num_clusters
+                kl_div = (batch_marginal * (batch_marginal / uniform_prior).log()).sum()
+                reg_loss += kl_div
             
             total_loss = total_loss + self.alpha * reg_loss / num_heads
         
