@@ -12,6 +12,33 @@ import json
 from pathlib import Path
 from tqdm import tqdm
 import time
+import numpy as np
+
+
+def convert_to_json_serializable(obj):
+    """
+    Convert numpy types to JSON-serializable Python types.
+    
+    Args:
+        obj: Object to convert (can be dict, list, numpy array, etc.)
+        
+    Returns:
+        JSON-serializable version of the object
+    """
+    if isinstance(obj, dict):
+        return {key: convert_to_json_serializable(value) for key, value in obj.items()}
+    elif isinstance(obj, list):
+        return [convert_to_json_serializable(item) for item in obj]
+    elif isinstance(obj, np.integer):
+        return int(obj)
+    elif isinstance(obj, np.floating):
+        return float(obj)
+    elif isinstance(obj, np.ndarray):
+        return obj.tolist()
+    elif isinstance(obj, (torch.Tensor,)):
+        return obj.cpu().numpy().tolist()
+    else:
+        return obj
 
 
 class Trainer:
@@ -377,6 +404,9 @@ class Trainer:
                     'beta': self.config.BETA,
                 }
             }
+            
+            # Convert all numpy types to JSON-serializable Python types
+            results = convert_to_json_serializable(results)
             
             results_path = self.config.RESULTS_DIR / 'final_results.json'
             with open(results_path, 'w') as f:
