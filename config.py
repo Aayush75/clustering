@@ -42,22 +42,22 @@ class Config:
     
     # Loss function parameters
     STUDENT_TEMP = 0.1  # Student temperature for softmax
-    TEACHER_TEMP = 0.07  # Final teacher temperature (slightly higher for 100 clusters)
+    TEACHER_TEMP = 0.04  # Final teacher temperature (lower = sharper assignments)
     WARMUP_TEACHER_TEMP = 0.04  # Starting teacher temperature
-    WARMUP_TEACHER_EPOCHS = 30  # Epochs to warmup teacher temperature (longer warmup)
+    WARMUP_TEACHER_EPOCHS = 0  # No warmup needed with Sinkhorn-Knopp
     CENTER_MOMENTUM = 0.9  # Momentum for center update
-    PROBS_MOMENTUM = 0.95  # Momentum for probability distribution (higher for stability)
-    BETA = 0.6  # Beta parameter for weighted MI
-    REGULARIZATION_WEIGHT = 10.0  # Alpha parameter for entropy regularization (HIGHER for 100 clusters!)
-    USE_REGULARIZATION = True  # Whether to use entropy regularization - MUST be True
+    PROBS_MOMENTUM = 0.9  # Momentum for probability distribution
+    BETA = 0.6  # Beta parameter (not used with SwAV loss)
+    REGULARIZATION_WEIGHT = 0.0  # Not needed - Sinkhorn-Knopp handles balance
+    USE_REGULARIZATION = False  # Sinkhorn-Knopp replaces entropy regularization
     
     # Training settings
     BATCH_SIZE = 256  # Batch size for training
     NUM_EPOCHS = 100  # Total number of training epochs
-    LEARNING_RATE = 1e-3  # Initial learning rate (10x higher for better convergence)
-    MIN_LR = 1e-5  # Minimum learning rate
-    WARMUP_EPOCHS = 10  # Number of epochs for learning rate warmup (shorter)
-    WEIGHT_DECAY = 1e-5  # Weight decay for optimizer (lower to prevent over-regularization)
+    LEARNING_RATE = 5e-4  # Initial learning rate (moderate for SwAV)
+    MIN_LR = 1e-6  # Minimum learning rate
+    WARMUP_EPOCHS = 10  # Number of epochs for learning rate warmup
+    WEIGHT_DECAY = 1e-4  # Weight decay for optimizer
     MOMENTUM_TEACHER = 0.996  # EMA momentum for teacher network
     
     # Optimizer settings

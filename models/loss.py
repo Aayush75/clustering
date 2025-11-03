@@ -29,31 +29,61 @@ def sim_weight(p1, p2, gamma=1.0):
     return (p1 * p2).pow(gamma).sum(dim=-1)
 
 
-def beta_mi(student_probs, teacher_probs, pk, beta=1.0):
+@torch.no_grad()
+def sinkhorn_knopp(Q, num_iters=3):
     """
-    Compute cross-entropy distillation loss for clustering.
+    Apply Sinkhorn-Knopp algorithm to get normalized assignment matrix.
     
-    Standard approach: minimize cross-entropy between teacher and student predictions.
-    This is the proven method used in SwAV, DINO, and similar self-supervised methods.
+    This ensures balanced cluster assignments - critical for preventing collapse!
     
     Args:
-        student_probs: Student probability distribution (batch_size, num_clusters)
-        teacher_probs: Teacher probability distribution (batch_size, num_clusters)
-        pk: Marginal cluster probabilities (1, num_clusters) - for monitoring/centering
-        beta: Not used, kept for API compatibility
+        Q: Assignment scores (batch_size, num_clusters)
+        num_iters: Number of iterations
         
     Returns:
-        Loss per sample (batch_size,)
+        Normalized assignment matrix
     """
-    eps = 1e-8
+    Q = Q.exp()  # Q is log-probability
     
-    # Clamp for numerical stability
-    student_probs = student_probs.clamp(min=eps)
-    teacher_probs = teacher_probs.clamp(min=eps)
+    # Make the matrix doubly stochastic
+    sum_of_rows = Q.sum(dim=0, keepdim=True)
+    Q /= sum_of_rows  # Normalize by column (cluster) sums
     
-    # Cross-entropy loss: H(teacher, student) = -sum(teacher * log(student))
-    # This encourages student to match teacher's cluster assignments
-    loss = -(teacher_probs * student_probs.log()).sum(dim=-1)
+    for _ in range(num_iters):
+        # Normalize each row (so each sample sums to 1)
+        Q /= Q.sum(dim=1, keepdim=True)
+        # Normalize each column (so each cluster gets equal total weight)
+        Q /= Q.sum(dim=0, keepdim=True)
+    
+    Q /= Q.sum(dim=1, keepdim=True)  # Final row normalization
+    return Q
+
+
+def swav_loss(student_logits, teacher_logits, teacher_temp=0.05):
+    """
+    SwAV-style loss with Sinkhorn-Knopp normalization.
+    
+    This is the CORRECT way to do self-supervised clustering!
+    
+    Args:
+        student_logits: Student cluster logits (batch_size, num_clusters)
+        teacher_logits: Teacher cluster logits (batch_size, num_clusters)
+        teacher_temp: Temperature for teacher sharpening
+        
+    Returns:
+        Loss value
+    """
+    # Sharpen teacher predictions with temperature
+    teacher_scores = teacher_logits / teacher_temp
+    
+    # Apply Sinkhorn-Knopp to get balanced target assignments
+    teacher_probs = sinkhorn_knopp(teacher_scores, num_iters=3)
+    
+    # Student uses standard softmax (with temperature handled outside)
+    student_log_probs = F.log_softmax(student_logits, dim=-1)
+    
+    # Cross-entropy loss
+    loss = -(teacher_probs * student_log_probs).sum(dim=-1).mean()
     
     return loss
 
@@ -170,28 +200,23 @@ class TEMILoss(nn.Module):
             student_out = student_outputs[head_idx]
             teacher_out = teacher_outputs[head_idx]
             
-            # Convert logits to probabilities
-            student_probs = F.softmax(student_out / self.student_temp, dim=-1)
-            teacher_probs = F.softmax(teacher_out / temp, dim=-1).detach()
+            # Apply temperature to student
+            student_out = student_out / self.student_temp
             
-            # Update marginal probabilities
-            self.update_marginals(teacher_probs, head_idx)
-            pk = self.get_pk(head_idx)
+            # SwAV loss with Sinkhorn-Knopp for balanced assignments
+            loss = swav_loss(student_out, teacher_out.detach(), teacher_temp=float(temp))
             
-            # Compute cross-entropy distillation loss
-            loss = beta_mi(
-                student_probs,
-                teacher_probs,
-                pk,
-                beta=self.beta
-            )
+            # Update marginal probabilities for monitoring
+            with torch.no_grad():
+                teacher_probs = F.softmax(teacher_out / temp, dim=-1)
+                self.update_marginals(teacher_probs, head_idx)
             
             # Check for NaN and handle gracefully
-            if torch.isnan(loss).any():
+            if torch.isnan(loss):
                 print(f"Warning: NaN detected in loss for head {head_idx}, skipping")
                 continue
             
-            total_loss += loss.mean()
+            total_loss += loss
         
         # Average over heads
         return total_loss / num_heads
@@ -292,53 +317,35 @@ class MultiHeadTEMILoss(nn.Module):
         # Update marginals
         self.update_marginals(teacher_probs_list)
         
-        # Compute loss for each head - simple cross-entropy distillation
+        # Compute loss for each head using SwAV approach
         total_loss = 0.0
         valid_heads = 0
         
         for head_idx in range(num_heads):
-            student_probs = student_probs_list[head_idx]
-            teacher_probs = teacher_probs_list[head_idx]
-            pk = self.get_pk(head_idx)
+            student_out = student_outputs[head_idx] / self.student_temp
+            teacher_out = teacher_outputs[head_idx]
             
-            # Standard cross-entropy distillation
-            loss = beta_mi(
-                student_probs,
-                teacher_probs,
-                pk,
-                beta=self.beta
-            )
+            # SwAV loss with Sinkhorn-Knopp
+            loss = swav_loss(student_out, teacher_out.detach(), teacher_temp=float(temp))
             
             # Check for NaN
-            if torch.isnan(loss).any():
+            if torch.isnan(loss):
                 print(f"Warning: NaN detected in loss for head {head_idx}, skipping")
                 continue
             
-            total_loss += loss.mean()
+            total_loss += loss
             valid_heads += 1
         
-        # Entropy regularization to prevent cluster collapse
-        # Encourage uniform distribution over clusters
-        if self.use_reg:
-            reg_loss = 0.0
-            for teacher_probs in teacher_probs_list:
-                # Batch-wise marginal distribution (average over batch)
-                batch_marginal = teacher_probs.mean(dim=0)
-                eps = 1e-8
-                batch_marginal = batch_marginal.clamp(min=eps)
-                
-                # KL divergence from uniform distribution
-                # D_KL(marginal || uniform) = sum(p * log(p * K))
-                # where K is number of clusters
-                uniform_prior = 1.0 / self.num_clusters
-                kl_div = (batch_marginal * (batch_marginal / uniform_prior).log()).sum()
-                reg_loss += kl_div
-            
-            total_loss = total_loss + self.alpha * reg_loss / num_heads
+        # Update marginals for monitoring
+        with torch.no_grad():
+            teacher_probs_list_for_update = [
+                F.softmax(t / temp, dim=-1) for t in teacher_outputs
+            ]
+            self.update_marginals(teacher_probs_list_for_update)
         
         # Average over valid heads (avoid division by zero)
         if valid_heads > 0:
             return total_loss / valid_heads
         else:
             print("Warning: All heads produced NaN, returning zero loss")
-            return torch.tensor(0.0, device=student_probs_list[0].device, requires_grad=True)
+            return torch.tensor(0.0, device=student_outputs[0].device, requires_grad=True)
