@@ -11,6 +11,7 @@ import numpy as np
 from pathlib import Path
 from collections import Counter
 import sys
+from src.visualization import visualize_clustering_results
 
 
 def load_experiment_results(experiment_dir):
@@ -249,6 +250,13 @@ def main():
                         help='Path to experiment directory')
     parser.add_argument('--detailed', action='store_true',
                         help='Show detailed analysis including per-class and per-cluster stats')
+    parser.add_argument('--plot', action='store_true',
+                        help='Generate cluster visualizations')
+    parser.add_argument('--viz_method', type=str, default='tsne',
+                        choices=['tsne', 'umap'],
+                        help='Dimensionality reduction method for visualization')
+    parser.add_argument('--show_plots', action='store_true',
+                        help='Display plots interactively')
     
     args = parser.parse_args()
     
@@ -311,6 +319,75 @@ def main():
             preds['test_predictions'],
             preds['test_labels']
         )
+    
+    # Generate visualizations if requested
+    if args.plot and 'predictions' in results and 'config' in results:
+        print("\n" + "="*70)
+        print("GENERATING VISUALIZATIONS")
+        print("="*70)
+        
+        preds = results['predictions']
+        config = results['config']
+        num_clusters = config.get('num_clusters', 100)
+        
+        # Check if features are available
+        experiment_dir = Path(args.experiment_dir)
+        features_dir = experiment_dir / "features"
+        
+        if features_dir.exists():
+            train_features_path = features_dir / "train_features.pt"
+            test_features_path = features_dir / "test_features.pt"
+            
+            if train_features_path.exists() and test_features_path.exists():
+                import torch
+                print("\nLoading features for visualization...")
+                
+                # Load features
+                train_data = torch.load(train_features_path)
+                test_data = torch.load(test_features_path)
+                
+                train_features = train_data['features']
+                test_features = test_data['features']
+                
+                # Convert to numpy
+                if not isinstance(train_features, np.ndarray):
+                    train_features = train_features.numpy()
+                if not isinstance(test_features, np.ndarray):
+                    test_features = test_features.numpy()
+                
+                viz_dir = experiment_dir / "visualizations"
+                
+                # Visualize training set
+                visualize_clustering_results(
+                    features=train_features,
+                    labels=preds['train_labels'],
+                    predictions=preds['train_predictions'],
+                    num_clusters=num_clusters,
+                    output_dir=str(viz_dir),
+                    dataset_name="Training",
+                    method=args.viz_method,
+                    show_plots=args.show_plots
+                )
+                
+                # Visualize test set
+                visualize_clustering_results(
+                    features=test_features,
+                    labels=preds['test_labels'],
+                    predictions=preds['test_predictions'],
+                    num_clusters=num_clusters,
+                    output_dir=str(viz_dir),
+                    dataset_name="Test",
+                    method=args.viz_method,
+                    show_plots=args.show_plots
+                )
+                
+                print(f"\nVisualizations saved to {viz_dir}")
+            else:
+                print("\nFeatures not found. Cannot generate visualizations.")
+                print("Run the experiment with --save_features to enable visualization.")
+        else:
+            print("\nFeatures directory not found. Cannot generate visualizations.")
+            print("Run the experiment with --save_features to enable visualization.")
     
     print("\n" + "="*70)
     print("Analysis complete!")

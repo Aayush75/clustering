@@ -26,6 +26,7 @@ from src.evaluation import (
     analyze_cluster_distribution,
     print_cluster_distribution
 )
+from src.visualization import visualize_clustering_results
 
 
 def parse_arguments():
@@ -50,9 +51,7 @@ def parse_arguments():
     
     # Model arguments
     parser.add_argument('--dinov2_model', type=str, default='facebook/dinov2-base',
-                        choices=['facebook/dinov2-small', 'facebook/dinov2-base',
-                                'facebook/dinov2-large', 'facebook/dinov2-giant'],
-                        help='DINOv2 model variant to use')
+                        help='DINOv2/DINOv3 model variant to use (e.g., facebook/dinov2-base, facebook/dinov2-large, or any HuggingFace DINO model)')
     parser.add_argument('--num_clusters', type=int, default=100,
                         help='Number of clusters (k=100 for CIFAR100)')
     
@@ -87,6 +86,15 @@ def parse_arguments():
                         help='Directory to save results')
     parser.add_argument('--experiment_name', type=str, default=None,
                         help='Name for this experiment (auto-generated if not provided)')
+    
+    # Visualization arguments
+    parser.add_argument('--plot_clusters', action='store_true',
+                        help='Generate cluster visualizations (t-SNE/UMAP plots)')
+    parser.add_argument('--viz_method', type=str, default='tsne',
+                        choices=['tsne', 'umap'],
+                        help='Dimensionality reduction method for visualization')
+    parser.add_argument('--show_plots', action='store_true',
+                        help='Display plots interactively (in addition to saving them)')
     
     # Device arguments
     parser.add_argument('--device', type=str, default='cuda',
@@ -368,6 +376,40 @@ def evaluate_results(args, clusterer, train_features, train_labels,
         test_labels=test_labels.numpy()
     )
     print(f"Predictions saved to {predictions_path}")
+    
+    # Generate visualizations if requested
+    if args.plot_clusters:
+        print("\n" + "="*60)
+        print("Step 4: Generating Visualizations")
+        print("="*60)
+        
+        viz_dir = experiment_dir / "visualizations"
+        
+        # Visualize training set
+        visualize_clustering_results(
+            features=train_features.numpy(),
+            labels=train_labels.numpy(),
+            predictions=train_predictions,
+            num_clusters=args.num_clusters,
+            output_dir=str(viz_dir),
+            dataset_name="Training",
+            method=args.viz_method,
+            show_plots=args.show_plots
+        )
+        
+        # Visualize test set
+        visualize_clustering_results(
+            features=test_features.numpy(),
+            labels=test_labels.numpy(),
+            predictions=test_predictions,
+            num_clusters=args.num_clusters,
+            output_dir=str(viz_dir),
+            dataset_name="Test",
+            method=args.viz_method,
+            show_plots=args.show_plots
+        )
+        
+        print(f"\nVisualizations saved to {viz_dir}")
 
 
 def main():

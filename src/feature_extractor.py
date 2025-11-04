@@ -1,9 +1,9 @@
 """
-Feature extraction module using DINOv2.
+Feature extraction module using DINOv2 and DINOv3.
 
 This module provides functionality to extract features from images using
-the DINOv2 (self-DIstillation with NO labels v2) vision transformer model.
-DINOv2 provides powerful visual features suitable for clustering tasks.
+the DINOv2 (self-DIstillation with NO labels v2) or DINOv3 vision transformer models.
+Both models provide powerful visual features suitable for clustering tasks.
 """
 
 import torch
@@ -15,32 +15,45 @@ from tqdm import tqdm
 
 class DINOv2FeatureExtractor:
     """
-    Feature extractor using the DINOv2 vision transformer model.
+    Feature extractor using the DINOv2 or DINOv3 vision transformer model.
     
-    This class wraps the DINOv2 model and provides methods for extracting
+    This class wraps the DINOv2/DINOv3 model and provides methods for extracting
     features from batches of images. The extracted features can be used
     for downstream clustering tasks.
+    
+    Note: DINOv3 models can be used by passing model names like:
+    - facebook/dinov2-small (DINOv2)
+    - facebook/dinov2-base (DINOv2)
+    - facebook/dinov2-large (DINOv2)
+    - facebook/dinov2-giant (DINOv2)
     """
     
     def __init__(self, model_name: str = "facebook/dinov2-base", device: str = "cuda"):
         """
-        Initialize the DINOv2 feature extractor.
+        Initialize the DINOv2/DINOv3 feature extractor.
         
         Args:
-            model_name: Name of the DINOv2 model to use from HuggingFace
+            model_name: Name of the DINOv2/DINOv3 model to use from HuggingFace
                        Options: dinov2-small, dinov2-base, dinov2-large, dinov2-giant
+                       or any compatible DINO model from HuggingFace
             device: Device to run the model on (cuda or cpu)
         """
         self.device = torch.device(device if torch.cuda.is_available() else "cpu")
-        print(f"Initializing DINOv2 feature extractor on {self.device}")
+        self.model_name = model_name
         
-        # Load the DINOv2 model and processor
-        self.model = AutoModel.from_pretrained(model_name).to(self.device)
+        # Detect if this is a DINOv3 model
+        self.is_dinov3 = 'dinov3' in model_name.lower() or 'dino-v3' in model_name.lower()
+        model_version = "DINOv3" if self.is_dinov3 else "DINOv2"
+        
+        print(f"Initializing {model_version} feature extractor on {self.device}")
+        
+        # Load the model
+        self.model = AutoModel.from_pretrained(model_name, trust_remote_code=True).to(self.device)
         self.model.eval()  # Set to evaluation mode
         
         # Get the feature dimension from the model
         self.feature_dim = self.model.config.hidden_size
-        print(f"DINOv2 model loaded: {model_name}, feature dimension: {self.feature_dim}")
+        print(f"{model_version} model loaded: {model_name}, feature dimension: {self.feature_dim}")
         
     def extract_features(
         self,
@@ -67,14 +80,15 @@ class DINOv2FeatureExtractor:
         features_list = []
         labels_list = []
         
-        print("Extracting features using DINOv2...")
+        model_version = "DINOv3" if self.is_dinov3 else "DINOv2"
+        print(f"Extracting features using {model_version}...")
         
         with torch.no_grad():
             for batch_idx, (images, labels) in enumerate(tqdm(data_loader, desc="Feature extraction")):
                 # Move images to the correct device
                 images = images.to(self.device)
                 
-                # Extract features using DINOv2
+                # Extract features using DINOv2/DINOv3
                 # The model returns a dict with 'last_hidden_state' and 'pooler_output'
                 outputs = self.model(pixel_values=images)
                 
@@ -126,7 +140,8 @@ class DINOv2FeatureExtractor:
         torch.save({
             'features': features,
             'labels': labels,
-            'feature_dim': self.feature_dim
+            'feature_dim': self.feature_dim,
+            'model_name': self.model_name
         }, path)
         print(f"Features saved to {path}")
     
@@ -142,5 +157,6 @@ class DINOv2FeatureExtractor:
             Tuple of (features, labels, feature_dim)
         """
         checkpoint = torch.load(path)
-        print(f"Features loaded from {path}")
+        model_name = checkpoint.get('model_name', 'unknown')
+        print(f"Features loaded from {path} (model: {model_name})")
         return checkpoint['features'], checkpoint['labels'], checkpoint['feature_dim']
