@@ -19,6 +19,7 @@ from datetime import datetime
 
 from src.data_loader import create_data_loaders
 from src.feature_extractor import DINOv2FeatureExtractor
+from src.clip_feature_extractor import CLIPFeatureExtractor
 from src.temi_clustering import TEMIClusterer
 from src.evaluation import (
     evaluate_clustering,
@@ -37,7 +38,7 @@ def parse_arguments():
         Parsed arguments object
     """
     parser = argparse.ArgumentParser(
-        description='TEMI Clustering on CIFAR100 with DINOv2',
+        description='TEMI Clustering on CIFAR100 with DINOv2, DINOv3, or CLIP',
         formatter_class=argparse.ArgumentDefaultsHelpFormatter
     )
     
@@ -50,8 +51,13 @@ def parse_arguments():
                         help='Number of workers for data loading')
     
     # Model arguments
+    parser.add_argument('--model_type', type=str, default='dinov2',
+                        choices=['dinov2', 'clip'],
+                        help='Type of feature extractor to use (dinov2 for DINOv2/DINOv3, clip for CLIP)')
     parser.add_argument('--dinov2_model', type=str, default='facebook/dinov2-base',
                         help='DINOv2/DINOv3 model variant to use (e.g., facebook/dinov2-base, facebook/dinov2-large, or any HuggingFace DINO model)')
+    parser.add_argument('--clip_model', type=str, default='openai/clip-vit-base-patch32',
+                        help='CLIP model variant to use (e.g., openai/clip-vit-base-patch32, openai/clip-vit-large-patch14)')
     parser.add_argument('--num_clusters', type=int, default=100,
                         help='Number of clusters (k=100 for CIFAR100)')
     
@@ -148,7 +154,7 @@ def save_config(args, experiment_dir):
 
 def extract_features(args, experiment_dir):
     """
-    Extract features from CIFAR100 using DINOv2.
+    Extract features from CIFAR100 using DINOv2/DINOv3 or CLIP.
     
     This function handles both extracting new features and loading
     pre-extracted features from disk.
@@ -163,17 +169,23 @@ def extract_features(args, experiment_dir):
     # Check if we should load pre-extracted features
     if args.load_features:
         print(f"Loading pre-extracted features from {args.load_features}")
-        train_data = DINOv2FeatureExtractor.load_features(args.load_features + "_train.pt")
-        test_data = DINOv2FeatureExtractor.load_features(args.load_features + "_test.pt")
+        # Use the appropriate feature loader based on model type
+        if args.model_type == 'clip':
+            train_data = CLIPFeatureExtractor.load_features(args.load_features + "_train.pt")
+            test_data = CLIPFeatureExtractor.load_features(args.load_features + "_test.pt")
+        else:
+            train_data = DINOv2FeatureExtractor.load_features(args.load_features + "_train.pt")
+            test_data = DINOv2FeatureExtractor.load_features(args.load_features + "_test.pt")
         
         train_features, train_labels, _ = train_data
         test_features, test_labels, _ = test_data
         
         return train_features, train_labels, test_features, test_labels
     
-    # Extract features using DINOv2
+    # Extract features using selected model
+    model_display_name = "CLIP" if args.model_type == 'clip' else "DINOv2/DINOv3"
     print("\n" + "="*60)
-    print("Step 1: Feature Extraction with DINOv2")
+    print(f"Step 1: Feature Extraction with {model_display_name}")
     print("="*60)
     
     # Create data loaders
@@ -186,14 +198,17 @@ def extract_features(args, experiment_dir):
     print(f"Training samples: {len(train_loader.dataset)}")
     print(f"Test samples: {len(test_loader.dataset)}")
     
-    if args.dinov2_model.startswith('facebook/dinov3'):
-            args.dinov2_model="facebook/dinov3-vit7b16-pretrain-lvd1689m"
-    
-    # Initialize feature extractor
-    feature_extractor = DINOv2FeatureExtractor(
-        model_name=args.dinov2_model,
-        device=args.device
-    )
+    # Initialize feature extractor based on model type
+    if args.model_type == 'clip':
+        feature_extractor = CLIPFeatureExtractor(
+            model_name=args.clip_model,
+            device=args.device
+        )
+    else:
+        feature_extractor = DINOv2FeatureExtractor(
+            model_name=args.dinov2_model,
+            device=args.device
+        )
     
     # Extract training features
     print("\nExtracting training features...")
@@ -421,7 +436,7 @@ def main():
     
     This function coordinates all steps:
     1. Parse arguments and setup directories
-    2. Extract features using DINOv2
+    2. Extract features using DINOv2/DINOv3 or CLIP
     3. Train TEMI clustering model
     4. Evaluate and save results
     """
@@ -436,11 +451,16 @@ def main():
     save_config(args, experiment_dir)
     
     # Print experiment configuration
+    model_name = "CLIP" if args.model_type == 'clip' else "DINOv2/DINOv3"
     print("\n" + "="*60)
-    print("TEMI Clustering on CIFAR100 with DINOv2")
+    print(f"TEMI Clustering on CIFAR100 with {model_name}")
     print("="*60)
+    print(f"Model type: {args.model_type}")
     print(f"Number of clusters: {args.num_clusters}")
-    print(f"DINOv2 model: {args.dinov2_model}")
+    if args.model_type == 'clip':
+        print(f"CLIP model: {args.clip_model}")
+    else:
+        print(f"DINOv2 model: {args.dinov2_model}")
     print(f"Training epochs: {args.num_epochs}")
     print(f"Device: {args.device}")
     print("="*60)
