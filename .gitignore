@@ -22,9 +22,8 @@ wheels/
 
 # Virtual environments
 venv/
-ENV/
 env/
-.venv
+ENV/
 
 # IDEs
 .vscode/
@@ -33,27 +32,26 @@ env/
 *.swo
 *~
 
-# Project specific
+# Data and checkpoints
 data/
 checkpoints/
-logs/
-results/
+example_checkpoints/
+cached_features/
+test_checkpoints/
 *.pth
 *.pt
 
-# But keep directory structure
-!data/.gitkeep
-!checkpoints/.gitkeep
-!logs/.gitkeep
-!results/.gitkeep
-
-# Jupyter
-.ipynb_checkpoints/
-*.ipynb
+# Logs
+logs/
+*.log
 
 # OS
 .DS_Store
 Thumbs.db
 
-# TensorBoard
-events.out.tfevents.*
+# Jupyter
+.ipynb_checkpoints/
+
+# Results
+results/
+outputs/

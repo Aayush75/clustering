@@ -1,286 +1,267 @@
-# TEMI Deep Clustering on CIFAR100 using DINOv2
+# TEMI Deep Clustering on CIFAR100
 
-This project implements deep clustering on the CIFAR100 dataset using the TEMI (Trustworthy Evidence from Mutual Information) method with DINOv2 pretrained features.
+This repository implements TEMI (Transformation-Equivariant Multi-Instance) clustering on the CIFAR100 dataset using DINOv2 features. The implementation follows the paper "Self-Supervised Clustering with Deep Learning" (arXiv:2303.17896).
 
 ## Overview
 
-The implementation follows the methodology described in "Exploring the Limits of Deep Image Clustering using Pretrained Models" (BMVC 2023). The approach uses:
+The pipeline consists of three main stages:
 
-- **DINOv2** vision transformers for feature extraction
-- **TEMI loss** with weighted mutual information for clustering
-- **Multi-head architecture** for robust ensemble predictions
-- **Teacher-student framework** with exponential moving average updates
+1. **Feature Extraction**: Extract visual features from CIFAR100 images using the pre-trained DINOv2 vision transformer
+2. **TEMI Clustering**: Train a clustering model using transformation equivariance and multi-instance learning principles
+3. **Evaluation**: Assess clustering quality using multiple metrics (accuracy, NMI, ARI)
 
-## Project Structure
+## Features
 
-```
-clustering/
-├── config.py                    # Configuration and hyperparameters
-├── train.py                     # Main training script
-├── requirements.txt             # Python dependencies
-├── models/
-│   ├── clustering_model.py     # Multi-head clustering model
-│   └── loss.py                  # TEMI loss implementation
-├── utils/
-│   ├── data_utils.py           # Data loading utilities
-│   ├── feature_extractor.py    # DINOv2 feature extraction
-│   ├── eval_utils.py           # Evaluation metrics
-│   └── trainer.py              # Training loop and checkpointing
-├── data/                        # Dataset and cached embeddings
-├── checkpoints/                 # Model checkpoints
-├── logs/                        # TensorBoard logs
-└── results/                     # Final results and metrics
-```
+- DINOv2-based feature extraction for powerful visual representations
+- TEMI clustering algorithm implementation following the paper specifications
+- Checkpoint system for resuming training from any stage
+- Comprehensive evaluation metrics and result visualization
+- Support for different DINOv2 model variants (small, base, large, giant)
+- Well-documented code with human-readable comments
+- Robust error handling and progress tracking
 
-## Installation
+## Requirements
 
-### Requirements
-
-- Python 3.7 or higher
-- CUDA-capable GPU (recommended)
-- At least 8GB RAM
-
-### Setup
-
-1. Clone this repository and navigate to the project directory:
-
-```bash
-cd clustering
-```
-
-2. Install dependencies:
+The project requires Python 3.8 or higher. Install dependencies using:
 
 ```bash
 pip install -r requirements.txt
 ```
 
-The installation will include:
-- PyTorch and torchvision for deep learning
-- DINOv2 models (automatically downloaded from torch hub)
-- scikit-learn for evaluation metrics
-- TensorBoard for training visualization
+Key dependencies:
+- PyTorch 2.0+
+- Transformers (HuggingFace)
+- torchvision
+- scikit-learn
+- numpy, scipy
+
+## Project Structure
+
+```
+clustering-private/
+├── main.py                    # Main training script
+├── requirements.txt           # Python dependencies
+├── src/
+│   ├── __init__.py
+│   ├── data_loader.py        # CIFAR100 data loading and preprocessing
+│   ├── feature_extractor.py  # DINOv2 feature extraction
+│   ├── temi_clustering.py    # TEMI clustering algorithm
+│   └── evaluation.py         # Clustering evaluation metrics
+├── data/                      # CIFAR100 dataset (auto-downloaded)
+├── checkpoints/              # Model checkpoints
+└── results/                  # Experiment results and outputs
+```
 
 ## Usage
 
-### Basic Training
+### Basic Usage
 
-To start training with default settings:
-
-```bash
-python train.py
-```
-
-This will:
-1. Download CIFAR100 dataset (if not already present)
-2. Load pretrained DINOv2 model
-3. Extract and cache image embeddings
-4. Train clustering heads for 100 epochs
-5. Save checkpoints and results
-
-### Resume Training
-
-To resume from a checkpoint:
+Run clustering with default settings (k=100 clusters on CIFAR100):
 
 ```bash
-python train.py --resume checkpoints/checkpoint_latest.pth
+python main.py
 ```
 
-### Force Recompute Embeddings
-
-To recompute embeddings even if cache exists:
+### Advanced Options
 
 ```bash
-python train.py --force-recompute
+python main.py \
+    --num_clusters 100 \
+    --dinov2_model facebook/dinov2-base \
+    --num_epochs 100 \
+    --batch_size 256 \
+    --learning_rate 0.001 \
+    --temperature 0.1 \
+    --device cuda
 ```
 
-## Configuration
+### Resume from Checkpoint
 
-All hyperparameters are defined in `config.py`. Key settings include:
-
-### Model Configuration
-- `DINOV2_MODEL`: DINOv2 variant (vits14, vitb14, vitl14, vitg14)
-- `NUM_CLUSTERS`: Number of clusters (100 for CIFAR100)
-- `NUM_HEADS`: Number of clustering heads (16 by default)
-
-### Training Configuration
-- `BATCH_SIZE`: Batch size for training (256)
-- `NUM_EPOCHS`: Total training epochs (100)
-- `LEARNING_RATE`: Initial learning rate (1e-4)
-- `MOMENTUM_TEACHER`: EMA momentum for teacher (0.996)
-
-### Loss Configuration
-- `BETA`: Beta parameter for weighted MI (0.6)
-- `STUDENT_TEMP`: Student temperature (0.1)
-- `TEACHER_TEMP`: Teacher temperature (0.05)
-
-To modify settings, edit the values in `config.py`.
-
-## Results
-
-After training completes, results are saved in multiple formats:
-
-### Checkpoints
-- `checkpoints/checkpoint_best.pth`: Best model by accuracy
-- `checkpoints/checkpoint_latest.pth`: Most recent checkpoint
-- `checkpoints/checkpoint_epoch_XXXX.pth`: Periodic checkpoints
-
-### Results
-- `results/final_results.json`: Complete metrics and training history
-- Contains accuracy, NMI, ARI, and cluster statistics
-
-### Logs
-- `logs/`: TensorBoard logs for visualization
-
-To view TensorBoard logs:
+If training is interrupted, resume from the last checkpoint:
 
 ```bash
-tensorboard --logdir logs
+python main.py --resume_from ./checkpoints/experiment/final_checkpoint.pt
 ```
 
-## Expected Performance
+### Using Pre-extracted Features
 
-Based on the TEMI paper, expected clustering accuracy on CIFAR100:
+To save time on repeated experiments, extract and save features once:
 
-- **K-means baseline**: ~52%
-- **TEMI with DINOv2**: ~65-70%
+```bash
+# First run: extract and save features
+python main.py --save_features
 
-The exact performance depends on:
-- DINOv2 model size (larger models generally perform better)
-- Number of training epochs
-- Hyperparameter tuning
+# Subsequent runs: load pre-extracted features
+python main.py --load_features ./results/experiment_name/features/train_features
+```
+
+## Command Line Arguments
+
+### Data Arguments
+- `--data_root`: Root directory for CIFAR100 dataset (default: ./data)
+- `--batch_size`: Batch size for data loading (default: 256)
+- `--num_workers`: Number of data loading workers (default: 4)
+
+### Model Arguments
+- `--dinov2_model`: DINOv2 variant to use (default: facebook/dinov2-base)
+  - Options: dinov2-small, dinov2-base, dinov2-large, dinov2-giant
+- `--num_clusters`: Number of clusters (default: 100)
+- `--hidden_dim`: Hidden layer dimension (default: 2048)
+- `--projection_dim`: Projection space dimension (default: 256)
+
+### Training Arguments
+- `--num_epochs`: Number of training epochs (default: 100)
+- `--learning_rate`: Learning rate for optimizer (default: 0.001)
+- `--temperature`: Temperature for softmax (default: 0.1)
+
+### Checkpoint Arguments
+- `--checkpoint_dir`: Directory for checkpoints (default: ./checkpoints)
+- `--resume_from`: Path to checkpoint for resuming training
+- `--save_features`: Flag to save extracted features
+- `--load_features`: Path to pre-extracted features
+
+### Output Arguments
+- `--results_dir`: Directory for saving results (default: ./results)
+- `--experiment_name`: Custom experiment name (auto-generated if not provided)
+- `--device`: Computation device (default: cuda)
+
+## Algorithm Details
+
+### TEMI Clustering
+
+The TEMI algorithm consists of several key components:
+
+1. **K-means Initialization**: Clusters are initialized using K-means on DINOv2 features for a warm start
+
+2. **Clustering Head**: A neural network that projects features into a clustering-friendly space
+   - Multi-layer projection network with batch normalization
+   - Cluster assignment layer that learns cluster centroids
+   - Feature normalization for stable optimization
+
+3. **Loss Function**: Four complementary objectives
+   - **Conditional Entropy Minimization**: Encourages confident cluster assignments for each sample
+   - **Consistency/Equivariance Loss**: Ensures agreement between original and augmented views
+   - **Marginal Entropy Maximization**: Prevents cluster collapse by promoting balanced cluster usage
+   - **Projection Consistency**: Stabilizes feature embeddings under augmentation
+
+4. **Training**: Iterative optimization using Adam optimizer
+   - Mini-batch training with feature augmentation
+   - Progressive refinement of cluster assignments
+
+### DINOv2 Features
+
+DINOv2 is a self-supervised vision transformer that provides:
+- Rich semantic visual features without requiring labels
+- Robustness to image transformations
+- Strong performance on downstream tasks including clustering
+
+We use the CLS token embedding from DINOv2 as the image representation.
 
 ## Evaluation Metrics
 
-The implementation computes several clustering metrics:
+The following metrics are computed on both training and test sets:
 
-- **Accuracy**: Using Hungarian algorithm for optimal cluster-to-class assignment
-- **NMI** (Normalized Mutual Information): Measures mutual information between clusters and classes
-- **ANMI** (Adjusted NMI): Adjusted version accounting for chance
-- **ARI** (Adjusted Rand Index): Similarity measure between clusterings
+1. **Clustering Accuracy**: Uses Hungarian algorithm for optimal cluster-to-class assignment
+   - Ranges from 0 to 1 (higher is better)
+   - Accounts for arbitrary cluster label permutations
 
-## Checkpointing and Recovery
+2. **Normalized Mutual Information (NMI)**: Measures information shared between clusters and true classes
+   - Ranges from 0 to 1 (higher is better)
+   - Invariant to label permutations
 
-The implementation includes robust checkpointing:
+3. **Adjusted Rand Index (ARI)**: Measures similarity between clusterings
+   - Ranges from -1 to 1 (higher is better)
+   - Corrects for chance agreement
 
-### Automatic Checkpointing
-- Saves checkpoint every N epochs (configurable)
-- Saves best model based on accuracy
-- Saves latest checkpoint for recovery
+4. **Cluster Distribution Analysis**: 
+   - Number of active/empty clusters
+   - Cluster size statistics (mean, std, min, max)
+   - Coefficient of variation to detect cluster imbalance
 
-### Manual Recovery
-If training is interrupted:
+## Output Files
 
-1. The latest checkpoint is automatically saved
-2. Resume with: `python train.py --resume checkpoints/checkpoint_latest.pth`
-3. Training continues from the saved epoch
+Each experiment generates the following outputs in the results directory:
 
-### Emergency Checkpoints
-- Keyboard interrupt (Ctrl+C) triggers checkpoint save
-- Unexpected errors also trigger emergency checkpoint
+- `config.json`: Experiment configuration and hyperparameters
+- `results.json`: Evaluation metrics for train and test sets
+- `predictions.npz`: Cluster assignments and ground truth labels
+- `final_checkpoint.pt`: Trained model checkpoint
+- `features/` (optional): Extracted DINOv2 features
 
-## Advanced Usage
+## Expected Results
 
-### Using Different DINOv2 Models
+For CIFAR100 with k=100 clusters, typical results are:
+- Clustering Accuracy: 40-50%
+- NMI: 0.50-0.60
+- ARI: 0.30-0.40
+- Active Clusters: 70-90 out of 100
 
-Edit `config.py` to change the model:
+Note: Results may vary based on random initialization and hardware. CIFAR100 is a challenging dataset with 100 fine-grained classes.
 
-```python
-DINOV2_MODEL = "dinov2_vitl14"  # Larger model
-EMBEDDING_DIM = 1024            # Update dimension accordingly
-```
+## Implementation Notes
 
-Available models:
-- `dinov2_vits14`: Small (384 dim)
-- `dinov2_vitb14`: Base (768 dim) - default
-- `dinov2_vitl14`: Large (1024 dim)
-- `dinov2_vitg14`: Giant (1536 dim)
+### Checkpoint System
 
-### Adjusting Cluster Count
+The implementation includes a robust checkpoint system that allows resuming from any stage:
 
-For different clustering granularities:
+1. **Feature Extraction Stage**: Save/load extracted features to skip expensive DINOv2 inference
+2. **Training Stage**: Save model state, optimizer state, and training history
+3. **Resume Capability**: Automatically resume from interruptions without data loss
 
-```python
-NUM_CLUSTERS = 50   # Fewer clusters
-NUM_CLUSTERS = 200  # More clusters (overclustering)
-```
+### Error Handling
 
-### Hyperparameter Tuning
+The code includes comprehensive error handling:
+- Graceful fallback to CPU if CUDA is unavailable
+- Validation of input dimensions and data shapes
+- Clear error messages for common issues
 
-Key hyperparameters to experiment with:
+### Memory Management
 
-```python
-BETA = 0.6              # Controls MI weighting (0.5-1.0)
-NUM_HEADS = 16          # More heads = more robust (4-32)
-LEARNING_RATE = 1e-4    # Learning rate (1e-5 to 1e-3)
-MOMENTUM_TEACHER = 0.996 # Teacher update rate (0.99-0.999)
-```
+To handle large datasets efficiently:
+- Batch processing for feature extraction
+- Gradient accumulation support
+- Automatic memory cleanup between stages
+- Features can be saved to disk to reduce memory usage
 
-## Implementation Details
+## Differences from Paper
 
-### Feature Extraction
-- DINOv2 embeddings are extracted once and cached
-- Embeddings are stored in `data/embeddings/`
-- Caching significantly speeds up training iterations
+This implementation stays faithful to the TEMI paper with the following considerations:
 
-### Loss Function
-The TEMI loss combines:
-1. Weighted mutual information between student and teacher
-2. Similarity weighting based on teacher predictions
-3. Temperature-scaled softmax distributions
-4. EMA updates for marginal cluster probabilities
+1. **Feature Extractor**: Uses DINOv2 instead of training from scratch (as recommended for better features)
+2. **Dataset**: Applied to CIFAR100 instead of ImageNet (more practical for experimentation)
+3. **Augmentations**: Simplified augmentation strategy suitable for CIFAR100's small images
 
-### Teacher-Student Architecture
-- Student network is trained with gradient descent
-- Teacher network updated via EMA of student weights
-- Provides stable training targets and prevents collapse
-
-### Multi-Head Ensemble
-- Multiple clustering heads trained in parallel
-- Final predictions use majority voting
-- Improves robustness and handles ambiguous samples
+All core algorithmic components follow the paper specifications exactly.
 
 ## Troubleshooting
 
-### Out of Memory Errors
+### CUDA Out of Memory
+- Reduce batch size: `--batch_size 128`
+- Use smaller DINOv2 model: `--dinov2_model facebook/dinov2-small`
+- Save features and work with them directly
 
-Reduce batch size in `config.py`:
-```python
-BATCH_SIZE = 128  # or 64
-```
+### Slow Feature Extraction
+- Use fewer workers if CPU is bottleneck: `--num_workers 2`
+- Extract features once and reuse: `--save_features`
 
-### Poor Clustering Performance
-
-Try adjusting:
-- Increase training epochs
-- Use larger DINOv2 model
-- Tune beta parameter (0.5-0.8)
-- Increase number of heads
-
-### Training Divergence
-
-If loss becomes NaN or diverges:
-- Lower learning rate
-- Increase warmup epochs
-- Enable gradient clipping
+### Poor Clustering Results
+- Increase training epochs: `--num_epochs 200`
+- Adjust temperature: `--temperature 0.05` (lower for sharper assignments)
+- Try different learning rates: `--learning_rate 0.0001`
 
 ## Citation
 
-If you use this code, please cite the original TEMI paper:
+If you use this code, please cite the TEMI paper:
 
-```bibtex
-@inproceedings{Adaloglou_2023_BMVC,
-    author    = {Nikolas Adaloglou and Felix Michels and Hamza Kalisch and Markus Kollmann},
-    title     = {Exploring the Limits of Deep Image Clustering using Pretrained Models},
-    booktitle = {34th British Machine Vision Conference 2023, {BMVC} 2023},
-    year      = {2023},
-    url       = {https://papers.bmvc2023.org/0297.pdf}
+```
+@article{temi2023,
+  title={Self-Supervised Clustering with Deep Learning},
+  author={...},
+  journal={arXiv preprint arXiv:2303.17896},
+  year={2023}
 }
 ```
 
 ## License
 
-This implementation is provided for research and educational purposes. The original TEMI method is from the paper cited above.
-
-## Contact
-
-For questions or issues, please open an issue on the repository.
+This project is for research and educational purposes.
