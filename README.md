@@ -1,24 +1,48 @@
 # TEMI Deep Clustering on CIFAR100
 
-This repository implements TEMI (Transformation-Equivariant Multi-Instance) clustering on the CIFAR100 dataset using DINOv2 features. The implementation follows the paper "Self-Supervised Clustering with Deep Learning" (arXiv:2303.17896).
+This repository implements TEMI (Transformation-Equivariant Multi-Instance) clustering on the CIFAR100 dataset using DINOv2/DINOv3 features. The implementation follows the paper "Self-Supervised Clustering with Deep Learning" (arXiv:2303.17896).
+
+**🚀 New to this project? Check out [QUICKSTART.md](QUICKSTART.md) to get started in minutes!**
+
+## Table of Contents
+
+- [Overview](#overview)
+- [Features](#features)
+- [Requirements](#requirements)
+- [Project Structure](#project-structure)
+- [Usage](#usage)
+  - [Basic Usage](#basic-usage)
+  - [Using DINOv3](#using-dinov3)
+  - [With Visualization](#with-visualization)
+  - [Using Pre-extracted Features](#using-pre-extracted-features-avoid-re-running-experiments)
+  - [Analyzing Existing Results](#analyzing-existing-results)
+- [Command Line Arguments](#command-line-arguments)
+- [Cluster Visualization](#cluster-visualization)
+- [Algorithm Details](#algorithm-details)
+- [Evaluation Metrics](#evaluation-metrics)
+- [Output Files](#output-files)
+- [Expected Results](#expected-results)
+- [Troubleshooting](#troubleshooting)
 
 ## Overview
 
 The pipeline consists of three main stages:
 
-1. **Feature Extraction**: Extract visual features from CIFAR100 images using the pre-trained DINOv2 vision transformer
+1. **Feature Extraction**: Extract visual features from CIFAR100 images using the pre-trained DINOv2 or DINOv3 vision transformer
 2. **TEMI Clustering**: Train a clustering model using transformation equivariance and multi-instance learning principles
 3. **Evaluation**: Assess clustering quality using multiple metrics (accuracy, NMI, ARI)
+4. **Visualization** (optional): Generate t-SNE/UMAP plots to visualize cluster structures
 
 ## Features
 
-- DINOv2-based feature extraction for powerful visual representations
-- TEMI clustering algorithm implementation following the paper specifications
-- Checkpoint system for resuming training from any stage
-- Comprehensive evaluation metrics and result visualization
-- Support for different DINOv2 model variants (small, base, large, giant)
-- Well-documented code with human-readable comments
-- Robust error handling and progress tracking
+- **DINOv2 and DINOv3 support**: Compatible with both DINOv2 and DINOv3 models for powerful visual representations
+- **TEMI clustering algorithm**: Implementation following the paper specifications
+- **Checkpoint system**: Resume training from any stage without re-running expensive computations
+- **Comprehensive evaluation**: Multiple metrics including accuracy, NMI, and ARI
+- **Cluster visualization**: Generate beautiful t-SNE and UMAP plots to visualize clustering results
+- **Support for multiple model variants**: Small, base, large, giant, and custom HuggingFace models
+- **Well-documented code**: Human-readable comments throughout
+- **Robust error handling**: Graceful degradation and informative error messages
 
 ## Requirements
 
@@ -34,25 +58,33 @@ Key dependencies:
 - torchvision
 - scikit-learn
 - numpy, scipy
+- matplotlib (for plotting)
+- umap-learn (optional, for UMAP visualization)
 
 ## Project Structure
 
 ```
 clustering-private/
 ├── main.py                    # Main training script
+├── analyze_results.py         # Results analysis and visualization script
 ├── requirements.txt           # Python dependencies
 ├── src/
 │   ├── __init__.py
 │   ├── data_loader.py        # CIFAR100 data loading and preprocessing
-│   ├── feature_extractor.py  # DINOv2 feature extraction
+│   ├── feature_extractor.py  # DINOv2/DINOv3 feature extraction
 │   ├── temi_clustering.py    # TEMI clustering algorithm
-│   └── evaluation.py         # Clustering evaluation metrics
+│   ├── evaluation.py         # Clustering evaluation metrics
+│   └── visualization.py      # Cluster visualization (t-SNE/UMAP)
 ├── data/                      # CIFAR100 dataset (auto-downloaded)
 ├── checkpoints/              # Model checkpoints
 └── results/                  # Experiment results and outputs
 ```
 
 ## Usage
+
+For complete examples and detailed usage instructions, see:
+- **[VISUALIZATION_GUIDE.md](VISUALIZATION_GUIDE.md)** - Detailed guide for cluster visualization
+- **[example_dinov3_visualization.py](example_dinov3_visualization.py)** - Example commands and workflows
 
 ### Basic Usage
 
@@ -61,6 +93,28 @@ Run clustering with default settings (k=100 clusters on CIFAR100):
 ```bash
 python main.py
 ```
+
+### Using DINOv3
+
+To use DINOv3 models instead of DINOv2, simply specify any DINOv3 model from HuggingFace:
+
+```bash
+python main.py --dinov2_model facebook/dinov3-base
+```
+
+### With Visualization
+
+Generate beautiful t-SNE or UMAP plots of your clusters:
+
+```bash
+# Using t-SNE (default)
+python main.py --plot_clusters --save_features
+
+# Using UMAP (requires umap-learn)
+python main.py --plot_clusters --viz_method umap --save_features
+```
+
+**Note**: The `--save_features` flag is required for visualization to work, as plots are generated from saved features.
 
 ### Advanced Options
 
@@ -72,6 +126,9 @@ python main.py \
     --batch_size 256 \
     --learning_rate 0.001 \
     --temperature 0.1 \
+    --plot_clusters \
+    --viz_method tsne \
+    --save_features \
     --device cuda
 ```
 
@@ -83,9 +140,9 @@ If training is interrupted, resume from the last checkpoint:
 python main.py --resume_from ./checkpoints/experiment/final_checkpoint.pt
 ```
 
-### Using Pre-extracted Features
+### Using Pre-extracted Features (Avoid Re-running Experiments)
 
-To save time on repeated experiments, extract and save features once:
+To save time and avoid re-running expensive feature extraction:
 
 ```bash
 # First run: extract and save features
@@ -95,6 +152,31 @@ python main.py --save_features
 python main.py --load_features ./results/experiment_name/features/train_features
 ```
 
+This is especially useful when:
+- Experimenting with different clustering hyperparameters
+- Generating visualizations from existing results
+- Running multiple experiments without re-extracting features
+
+### Analyzing Existing Results
+
+You can analyze and visualize results from completed experiments without re-running them:
+
+```bash
+# Basic analysis
+python analyze_results.py ./results/experiment_name
+
+# Detailed analysis with per-class and per-cluster statistics
+python analyze_results.py ./results/experiment_name --detailed
+
+# Generate visualizations from saved features
+python analyze_results.py ./results/experiment_name --plot --viz_method tsne
+
+# Use UMAP instead of t-SNE
+python analyze_results.py ./results/experiment_name --plot --viz_method umap
+```
+
+**Note**: Visualization requires that the experiment was run with `--save_features` flag.
+
 ## Command Line Arguments
 
 ### Data Arguments
@@ -103,8 +185,10 @@ python main.py --load_features ./results/experiment_name/features/train_features
 - `--num_workers`: Number of data loading workers (default: 4)
 
 ### Model Arguments
-- `--dinov2_model`: DINOv2 variant to use (default: facebook/dinov2-base)
-  - Options: dinov2-small, dinov2-base, dinov2-large, dinov2-giant
+- `--dinov2_model`: DINOv2/DINOv3 model to use (default: facebook/dinov2-base)
+  - DINOv2 options: facebook/dinov2-small, facebook/dinov2-base, facebook/dinov2-large, facebook/dinov2-giant
+  - DINOv3 options: Any DINOv3 model from HuggingFace (e.g., facebook/dinov3-base)
+  - Custom: Any compatible DINO model from HuggingFace
 - `--num_clusters`: Number of clusters (default: 100)
 - `--hidden_dim`: Hidden layer dimension (default: 2048)
 - `--projection_dim`: Projection space dimension (default: 256)
@@ -117,8 +201,13 @@ python main.py --load_features ./results/experiment_name/features/train_features
 ### Checkpoint Arguments
 - `--checkpoint_dir`: Directory for checkpoints (default: ./checkpoints)
 - `--resume_from`: Path to checkpoint for resuming training
-- `--save_features`: Flag to save extracted features
-- `--load_features`: Path to pre-extracted features
+- `--save_features`: Flag to save extracted features (required for visualization)
+- `--load_features`: Path to pre-extracted features (for avoiding re-extraction)
+
+### Visualization Arguments
+- `--plot_clusters`: Generate cluster visualizations (t-SNE/UMAP plots)
+- `--viz_method`: Dimensionality reduction method (choices: tsne, umap; default: tsne)
+- `--show_plots`: Display plots interactively (in addition to saving them)
 
 ### Output Arguments
 - `--results_dir`: Directory for saving results (default: ./results)
@@ -178,6 +267,57 @@ The following metrics are computed on both training and test sets:
    - Cluster size statistics (mean, std, min, max)
    - Coefficient of variation to detect cluster imbalance
 
+## Cluster Visualization
+
+The repository supports generating beautiful visualizations of clustering results using dimensionality reduction techniques.
+
+### Available Visualization Methods
+
+1. **t-SNE (t-distributed Stochastic Neighbor Embedding)**
+   - Default method
+   - Great for visualizing local structure
+   - Works well for most datasets
+   - No additional installation required
+
+2. **UMAP (Uniform Manifold Approximation and Projection)**
+   - Faster than t-SNE
+   - Better preserves global structure
+   - Requires: `pip install umap-learn`
+
+### Generated Visualizations
+
+When using `--plot_clusters`, the following visualizations are generated:
+
+1. **Cluster Visualization Plots**: Side-by-side comparison of:
+   - Predicted clusters (colored by cluster assignment)
+   - Ground truth labels (colored by true class)
+   
+2. **Cluster Distribution Bar Plot**: Shows the number of samples in each cluster
+
+All visualizations are saved in the `visualizations/` subdirectory within the experiment results folder.
+
+### Example Usage
+
+```bash
+# Generate t-SNE visualizations
+python main.py --plot_clusters --save_features
+
+# Generate UMAP visualizations
+python main.py --plot_clusters --viz_method umap --save_features
+
+# Visualize existing results
+python analyze_results.py ./results/experiment_name --plot --viz_method tsne
+```
+
+### Understanding the Plots
+
+- **Left plot (Predicted Clusters)**: Shows how your clustering algorithm grouped the data
+- **Right plot (Ground Truth)**: Shows the actual class labels
+- **Good clustering**: Similar colors should be grouped together in the predicted clusters plot
+- **Cluster overlap**: When clusters overlap significantly in the visualization, it indicates that those clusters are similar in the feature space
+
+**For detailed visualization documentation, see [VISUALIZATION_GUIDE.md](VISUALIZATION_GUIDE.md)**
+
 ## Output Files
 
 Each experiment generates the following outputs in the results directory:
@@ -186,7 +326,8 @@ Each experiment generates the following outputs in the results directory:
 - `results.json`: Evaluation metrics for train and test sets
 - `predictions.npz`: Cluster assignments and ground truth labels
 - `final_checkpoint.pt`: Trained model checkpoint
-- `features/` (optional): Extracted DINOv2 features
+- `features/` (optional): Extracted DINOv2/DINOv3 features
+- `visualizations/` (optional): t-SNE/UMAP plots and cluster distribution charts
 
 ## Expected Results
 
