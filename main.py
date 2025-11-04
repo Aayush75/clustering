@@ -186,6 +186,9 @@ def extract_features(args, experiment_dir):
     print(f"Training samples: {len(train_loader.dataset)}")
     print(f"Test samples: {len(test_loader.dataset)}")
     
+    if args.dinov2_model.startswith('facebook/dinov3'):
+            args.dinov2_model="facebook/dinov3-vit7b16-pretrain-lvd1689m"
+    
     # Initialize feature extractor
     feature_extractor = DINOv2FeatureExtractor(
         model_name=args.dinov2_model,
