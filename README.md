@@ -1,8 +1,10 @@
-# TEMI Deep Clustering on CIFAR100
+# TEMI Deep Clustering on CIFAR100 and ImageNet
 
-This repository implements TEMI (Transformation-Equivariant Multi-Instance) clustering on the CIFAR100 dataset using DINOv2/DINOv3 features. The implementation follows the paper "Self-Supervised Clustering with Deep Learning" (arXiv:2303.17896).
+This repository implements TEMI (Transformation-Equivariant Multi-Instance) clustering on the CIFAR100 and ImageNet datasets using DINOv2/DINOv3 or CLIP features. The implementation follows the paper "Self-Supervised Clustering with Deep Learning" (arXiv:2303.17896).
 
 **🚀 New to this project? Check out [QUICKSTART.md](QUICKSTART.md) to get started in minutes!**
+
+**📊 Want to use ImageNet? Check out [IMAGENET_USAGE.md](IMAGENET_USAGE.md) for the complete guide!**
 
 ## Table of Contents
 
@@ -12,6 +14,7 @@ This repository implements TEMI (Transformation-Equivariant Multi-Instance) clus
 - [Project Structure](#project-structure)
 - [Usage](#usage)
   - [Basic Usage](#basic-usage)
+  - [Using CLIP](#using-clip)
   - [Using DINOv3](#using-dinov3)
   - [With Visualization](#with-visualization)
   - [Using Pre-extracted Features](#using-pre-extracted-features-avoid-re-running-experiments)
@@ -28,14 +31,15 @@ This repository implements TEMI (Transformation-Equivariant Multi-Instance) clus
 
 The pipeline consists of three main stages:
 
-1. **Feature Extraction**: Extract visual features from CIFAR100 images using the pre-trained DINOv2 or DINOv3 vision transformer
+1. **Feature Extraction**: Extract visual features from dataset images using pre-trained vision models (DINOv2, DINOv3, or CLIP)
 2. **TEMI Clustering**: Train a clustering model using transformation equivariance and multi-instance learning principles
 3. **Evaluation**: Assess clustering quality using multiple metrics (accuracy, NMI, ARI)
 4. **Visualization** (optional): Generate t-SNE/UMAP plots to visualize cluster structures
 
 ## Features
 
-- **DINOv2 and DINOv3 support**: Compatible with both DINOv2 and DINOv3 models for powerful visual representations
+- **Multiple datasets**: Support for CIFAR100 and ImageNet-1K datasets
+- **Multiple feature extractors**: Support for DINOv2, DINOv3, and CLIP models for powerful visual representations
 - **TEMI clustering algorithm**: Implementation following the paper specifications
 - **Checkpoint system**: Resume training from any stage without re-running expensive computations
 - **Comprehensive evaluation**: Multiple metrics including accuracy, NMI, and ARI
@@ -65,34 +69,65 @@ Key dependencies:
 
 ```
 clustering-private/
-├── main.py                    # Main training script
-├── analyze_results.py         # Results analysis and visualization script
-├── requirements.txt           # Python dependencies
+├── main.py                       # Main training script
+├── analyze_results.py            # Results analysis and visualization script
+├── requirements.txt              # Python dependencies
 ├── src/
 │   ├── __init__.py
-│   ├── data_loader.py        # CIFAR100 data loading and preprocessing
-│   ├── feature_extractor.py  # DINOv2/DINOv3 feature extraction
-│   ├── temi_clustering.py    # TEMI clustering algorithm
-│   ├── evaluation.py         # Clustering evaluation metrics
-│   └── visualization.py      # Cluster visualization (t-SNE/UMAP)
-├── data/                      # CIFAR100 dataset (auto-downloaded)
-├── checkpoints/              # Model checkpoints
-└── results/                  # Experiment results and outputs
+│   ├── data_loader.py           # CIFAR100 data loading and preprocessing
+│   ├── feature_extractor.py     # DINOv2/DINOv3 feature extraction
+│   ├── clip_feature_extractor.py # CLIP feature extraction
+│   ├── temi_clustering.py       # TEMI clustering algorithm
+│   ├── evaluation.py            # Clustering evaluation metrics
+│   └── visualization.py         # Cluster visualization (t-SNE/UMAP)
+├── data/                         # CIFAR100 dataset (auto-downloaded)
+├── checkpoints/                 # Model checkpoints
+└── results/                     # Experiment results and outputs
 ```
 
 ## Usage
 
 For complete examples and detailed usage instructions, see:
+- **[IMAGENET_USAGE.md](IMAGENET_USAGE.md)** - Complete guide for using ImageNet dataset
+- **[CLIP_USAGE.md](CLIP_USAGE.md)** - Complete guide for using CLIP models
 - **[VISUALIZATION_GUIDE.md](VISUALIZATION_GUIDE.md)** - Detailed guide for cluster visualization
-- **[example_dinov3_visualization.py](example_dinov3_visualization.py)** - Example commands and workflows
+- **[example_clip_usage.py](example_clip_usage.py)** - CLIP example commands and workflows
+- **[example_dinov3_visualization.py](example_dinov3_visualization.py)** - DINOv3 example commands and workflows
+- **[example_imagenet_usage.py](example_imagenet_usage.py)** - ImageNet example commands and workflows
 
 ### Basic Usage
 
-Run clustering with default settings (k=100 clusters on CIFAR100):
+Run clustering with default settings (k=100 clusters on CIFAR100 using DINOv2):
 
 ```bash
 python main.py
 ```
+
+Run clustering on ImageNet (k=1000 clusters using DINOv2):
+
+```bash
+python main.py --dataset imagenet
+```
+
+### Using CLIP
+
+To use CLIP models for feature extraction instead of DINOv2:
+
+```bash
+# Using default CLIP model (ViT-B/32)
+python main.py --model_type clip
+
+# Using a specific CLIP model
+python main.py --model_type clip --clip_model openai/clip-vit-large-patch14
+
+# Using CLIP with visualization
+python main.py --model_type clip --plot_clusters --save_features
+```
+
+Available CLIP models:
+- `openai/clip-vit-base-patch32` (default, 512-dim features, fastest)
+- `openai/clip-vit-base-patch16` (512-dim features, better quality)
+- `openai/clip-vit-large-patch14` (768-dim features, best quality)
 
 ### Using DINOv3
 
@@ -101,6 +136,29 @@ To use DINOv3 models instead of DINOv2, simply specify any DINOv3 model from Hug
 ```bash
 python main.py --dinov2_model facebook/dinov3-base
 ```
+
+### Using ImageNet Dataset
+
+To use the ImageNet-1K dataset (128x128 version from HuggingFace):
+
+```bash
+# Basic ImageNet clustering (1000 clusters by default)
+python main.py --dataset imagenet
+
+# ImageNet with CLIP
+python main.py --dataset imagenet --model_type clip
+
+# ImageNet with custom number of clusters
+python main.py --dataset imagenet --num_clusters 500
+
+# ImageNet with DINOv2-large and visualization
+python main.py --dataset imagenet \
+               --dinov2_model facebook/dinov2-large \
+               --plot_clusters \
+               --save_features
+```
+
+**For complete ImageNet documentation, see [IMAGENET_USAGE.md](IMAGENET_USAGE.md)**
 
 ### With Visualization
 
@@ -119,7 +177,9 @@ python main.py --plot_clusters --viz_method umap --save_features
 ### Advanced Options
 
 ```bash
+# Using DINOv2 with custom settings
 python main.py \
+    --model_type dinov2 \
     --num_clusters 100 \
     --dinov2_model facebook/dinov2-base \
     --num_epochs 100 \
@@ -128,6 +188,19 @@ python main.py \
     --temperature 0.1 \
     --plot_clusters \
     --viz_method tsne \
+    --save_features \
+    --device cuda
+
+# Using CLIP with custom settings
+python main.py \
+    --model_type clip \
+    --clip_model openai/clip-vit-large-patch14 \
+    --num_clusters 100 \
+    --num_epochs 100 \
+    --batch_size 256 \
+    --learning_rate 0.001 \
+    --temperature 0.1 \
+    --plot_clusters \
     --save_features \
     --device cuda
 ```
@@ -180,16 +253,21 @@ python analyze_results.py ./results/experiment_name --plot --viz_method umap
 ## Command Line Arguments
 
 ### Data Arguments
-- `--data_root`: Root directory for CIFAR100 dataset (default: ./data)
+- `--dataset`: Dataset to use (choices: cifar100, imagenet; default: cifar100)
+- `--data_root`: Root directory for dataset storage (default: ./data)
 - `--batch_size`: Batch size for data loading (default: 256)
 - `--num_workers`: Number of data loading workers (default: 4)
 
 ### Model Arguments
+- `--model_type`: Type of feature extractor (choices: dinov2, clip; default: dinov2)
 - `--dinov2_model`: DINOv2/DINOv3 model to use (default: facebook/dinov2-base)
   - DINOv2 options: facebook/dinov2-small, facebook/dinov2-base, facebook/dinov2-large, facebook/dinov2-giant
   - DINOv3 options: Any DINOv3 model from HuggingFace (e.g., facebook/dinov3-base)
   - Custom: Any compatible DINO model from HuggingFace
-- `--num_clusters`: Number of clusters (default: 100)
+- `--clip_model`: CLIP model to use (default: openai/clip-vit-base-patch32)
+  - Options: openai/clip-vit-base-patch32, openai/clip-vit-base-patch16, openai/clip-vit-large-patch14
+  - Custom: Any compatible CLIP model from HuggingFace
+- `--num_clusters`: Number of clusters (default: 100 for CIFAR100, 1000 for ImageNet)
 - `--hidden_dim`: Hidden layer dimension (default: 2048)
 - `--projection_dim`: Projection space dimension (default: 256)
 
@@ -220,7 +298,7 @@ python analyze_results.py ./results/experiment_name --plot --viz_method umap
 
 The TEMI algorithm consists of several key components:
 
-1. **K-means Initialization**: Clusters are initialized using K-means on DINOv2 features for a warm start
+1. **K-means Initialization**: Clusters are initialized using K-means on extracted features for a warm start
 
 2. **Clustering Head**: A neural network that projects features into a clustering-friendly space
    - Multi-layer projection network with batch normalization
@@ -237,14 +315,25 @@ The TEMI algorithm consists of several key components:
    - Mini-batch training with feature augmentation
    - Progressive refinement of cluster assignments
 
-### DINOv2 Features
+### Feature Extractors
 
-DINOv2 is a self-supervised vision transformer that provides:
+#### DINOv2/DINOv3 Features
+
+DINOv2 and DINOv3 are self-supervised vision transformers that provide:
 - Rich semantic visual features without requiring labels
 - Robustness to image transformations
 - Strong performance on downstream tasks including clustering
 
-We use the CLS token embedding from DINOv2 as the image representation.
+We use the CLS token embedding from DINOv2/DINOv3 as the image representation.
+
+#### CLIP Features
+
+CLIP (Contrastive Language-Image Pre-training) is a vision-language model that provides:
+- Strong visual features trained on image-text pairs
+- Excellent transfer learning capabilities
+- 512-dimensional (ViT-B) or 768-dimensional (ViT-L) embeddings
+
+We use the vision encoder's pooled output with projection as the image representation.
 
 ## Evaluation Metrics
 

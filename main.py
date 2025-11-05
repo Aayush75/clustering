@@ -43,8 +43,11 @@ def parse_arguments():
     )
     
     # Data arguments
+    parser.add_argument('--dataset', type=str, default='cifar100',
+                        choices=['cifar100', 'imagenet'],
+                        help='Dataset to use (cifar100 or imagenet)')
     parser.add_argument('--data_root', type=str, default='./data',
-                        help='Root directory for CIFAR100 dataset')
+                        help='Root directory for dataset storage')
     parser.add_argument('--batch_size', type=int, default=256,
                         help='Batch size for data loading')
     parser.add_argument('--num_workers', type=int, default=4,
@@ -58,8 +61,8 @@ def parse_arguments():
                         help='DINOv2/DINOv3 model variant to use (e.g., facebook/dinov2-base, facebook/dinov2-large, or any HuggingFace DINO model)')
     parser.add_argument('--clip_model', type=str, default='openai/clip-vit-base-patch32',
                         help='CLIP model variant to use (e.g., openai/clip-vit-base-patch32, openai/clip-vit-large-patch14)')
-    parser.add_argument('--num_clusters', type=int, default=100,
-                        help='Number of clusters (k=100 for CIFAR100)')
+    parser.add_argument('--num_clusters', type=int, default=None,
+                        help='Number of clusters (default: 100 for CIFAR100, 1000 for ImageNet)')
     
     # Training arguments
     parser.add_argument('--num_epochs', type=int, default=100,
@@ -123,10 +126,17 @@ def setup_directories(args):
     # Create results directory
     Path(args.results_dir).mkdir(parents=True, exist_ok=True)
     
+    # Set default number of clusters based on dataset if not specified
+    if args.num_clusters is None:
+        if args.dataset.lower() == 'cifar100':
+            args.num_clusters = 100
+        elif args.dataset.lower() == 'imagenet':
+            args.num_clusters = 1000
+    
     # Generate experiment name if not provided
     if args.experiment_name is None:
         timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
-        args.experiment_name = f"temi_cifar100_{args.num_clusters}clusters_{timestamp}"
+        args.experiment_name = f"temi_{args.dataset}_{args.num_clusters}clusters_{timestamp}"
     
     # Create experiment subdirectory in results
     experiment_dir = Path(args.results_dir) / args.experiment_name
@@ -189,11 +199,13 @@ def extract_features(args, experiment_dir):
     print("="*60)
     
     # Create data loaders
-    print("Loading CIFAR100 dataset...")
+    dataset_display_name = args.dataset.upper()
+    print(f"Loading {dataset_display_name} dataset...")
     train_loader, test_loader = create_data_loaders(
         root=args.data_root,
         batch_size=args.batch_size,
-        num_workers=args.num_workers
+        num_workers=args.num_workers,
+        dataset_name=args.dataset
     )
     print(f"Training samples: {len(train_loader.dataset)}")
     print(f"Test samples: {len(test_loader.dataset)}")
@@ -452,9 +464,11 @@ def main():
     
     # Print experiment configuration
     model_name = "CLIP" if args.model_type == 'clip' else "DINOv2/DINOv3"
+    dataset_name = args.dataset.upper()
     print("\n" + "="*60)
-    print(f"TEMI Clustering on CIFAR100 with {model_name}")
+    print(f"TEMI Clustering on {dataset_name} with {model_name}")
     print("="*60)
+    print(f"Dataset: {dataset_name}")
     print(f"Model type: {args.model_type}")
     print(f"Number of clusters: {args.num_clusters}")
     if args.model_type == 'clip':
