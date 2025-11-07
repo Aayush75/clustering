@@ -193,85 +193,44 @@ def apply_pseudo_labels(
     device = cluster_assignments.device
     pseudo_labels = torch.zeros_like(cluster_assignments, dtype=torch.long, device=device)
     
-    for i, cluster_id in enumerate(cluster_assignments):
-        cluster_id_int = int(cluster_id.item())
-        pseudo_labels[i] = cluster_to_label.get(cluster_id_int, -1)
+    mapping = torch.tensor([cluster_to_label.get(int(c), -1) for c in range(len(cluster_to_label))],
+                       dtype=torch.long, device=cluster_assignments.device)
+    pseudo_labels = mapping[cluster_assignments]
     
     return pseudo_labels
 
 
-def compute_sample_confidence_scores(
-    features: torch.Tensor,
-    cluster_assignments: torch.Tensor,
-    cluster_centers: torch.Tensor,
-    cluster_to_label: Dict[int, int],
-    cluster_to_confidence: Dict[int, float]
-) -> torch.Tensor:
-    """
-    Compute sample-wise confidence scores for pseudo labels (PyTorch-native).
-    
-    The confidence score for each sample is based on:
-    1. Distance to cluster center (closer = higher confidence)
-    2. Cluster purity (from k-nearest samples majority vote)
-    
-    Args:
-        features: Feature tensor of shape (n_samples, n_features)
-        cluster_assignments: Cluster assignments of shape (n_samples,)
-        cluster_centers: Cluster centers of shape (n_clusters, n_features)
-        cluster_to_label: Dictionary mapping cluster_id -> pseudo_label
-        cluster_to_confidence: Dictionary mapping cluster_id -> cluster confidence
-        
-    Returns:
-        Confidence scores of shape (n_samples,) with values in [0, 1]
-    """
-    # Ensure all inputs are tensors on the same device
+def compute_sample_confidence_scores(features, cluster_assignments, cluster_centers,
+                                     cluster_to_label, cluster_to_confidence):
     device = features.device
-    if not isinstance(cluster_assignments, torch.Tensor):
-        cluster_assignments = torch.tensor(cluster_assignments, device=device)
-    else:
-        cluster_assignments = cluster_assignments.to(device)
-    
-    if not isinstance(cluster_centers, torch.Tensor):
-        cluster_centers = torch.tensor(cluster_centers, device=device)
-    else:
-        cluster_centers = cluster_centers.to(device)
-    
-    features = features.to(device)
-    
-    # Normalize features and centers for cosine similarity
+
+    # Normalize
     features_norm = torch.nn.functional.normalize(features, p=2, dim=1)
     centers_norm = torch.nn.functional.normalize(cluster_centers, p=2, dim=1)
-    
-    n_samples = len(cluster_assignments)
-    confidence_scores = torch.zeros(n_samples, device=device)
-    
-    for i in range(n_samples):
-        cluster_id = int(cluster_assignments[i].item())
-        
-        # Get cluster confidence (from k-nearest majority vote)
-        cluster_conf = cluster_to_confidence.get(cluster_id, 0.0)
-        
-        # Skip if cluster has no valid mapping
-        if cluster_to_label.get(cluster_id, -1) == -1:
-            confidence_scores[i] = 0.0
-            continue
-        
-        # Compute distance-based confidence
-        if cluster_id < len(centers_norm):
-            # Compute cosine similarity to cluster center
-            similarity = torch.dot(features_norm[i], centers_norm[cluster_id])
-            # Convert to confidence (similarity ranges from -1 to 1, map to 0-1)
-            distance_conf = (similarity + 1) / 2.0
-        else:
-            distance_conf = 0.0
-        
-        # Combine cluster confidence and distance confidence
-        # Use geometric mean for balanced combination
-        # Ensure non-negative values to avoid NaN in sqrt
-        cluster_conf = max(0.0, cluster_conf)
-        distance_conf = max(0.0, distance_conf.item() if isinstance(distance_conf, torch.Tensor) else distance_conf)
-        confidence_scores[i] = torch.sqrt(torch.tensor(cluster_conf * distance_conf, device=device))
-    
+
+    # Identify invalid clusters (assigned -1)
+    valid_mask = cluster_assignments != -1
+
+    # Vectorized center selection
+    chosen_centers = centers_norm[cluster_assignments.clamp(min=0)]
+    similarities = (features_norm * chosen_centers).sum(dim=1)  # cosine similarity
+    distance_conf = (similarities + 1) / 2.0                    # map to [0,1]
+    distance_conf = torch.clamp(distance_conf, 0.0, 1.0)
+
+    # Convert cluster_to_confidence → tensor
+    cluster_conf_tensor = torch.tensor(
+        [cluster_to_confidence.get(int(i), 0.0) for i in range(len(cluster_centers))],
+        device=device, dtype=torch.float32
+    )
+    cluster_conf_vals = cluster_conf_tensor[cluster_assignments.clamp(min=0)]
+    cluster_conf_vals = torch.clamp(cluster_conf_vals, 0.0, 1.0)
+
+    # Geometric mean of confidence components
+    confidence_scores = torch.sqrt(cluster_conf_vals * distance_conf)
+
+    # Mark invalid clusters as 0
+    confidence_scores[~valid_mask] = 0.0
+
     return confidence_scores
 
 
@@ -300,6 +259,9 @@ def compute_pseudo_label_accuracy(
     
     if not torch.any(valid_mask):
         return 0.0
+    
+    device  = pseudo_labels.device
+    true_labels = true_labels.to(device)
     
     accuracy = torch.mean((pseudo_labels[valid_mask] == true_labels[valid_mask]).float()).item()
     return accuracy
@@ -515,7 +477,8 @@ def print_cluster_mapping_summary(
         
         # Compute per-cluster accuracy
         cluster_true_labels = true_labels[cluster_mask]
-        cluster_accuracy = torch.mean((cluster_true_labels == pseudo_label).float()).item() if pseudo_label != -1 else 0.0
+        cluster_accuracy = (cluster_true_labels == torch.tensor(pseudo_label, device=cluster_true_labels.device)).float().mean()
+
         
         # Format label
         if class_names and pseudo_label != -1:
