@@ -92,7 +92,7 @@ def test_pseudo_labeling():
     pseudo_labels = apply_pseudo_labels(cluster_assignments, cluster_to_label)
     
     print(f"\nGenerated {len(pseudo_labels)} pseudo labels")
-    print(f"  Unique pseudo labels: {np.unique(pseudo_labels)}")
+    print(f"  Unique pseudo labels: {torch.unique(pseudo_labels).cpu().numpy()}")
     
     # Test 4: Compute accuracy
     print("\n" + "="*60)
@@ -119,15 +119,15 @@ def test_pseudo_labeling():
     print(f"\nConfidence scores shape: {confidence_scores.shape}")
     print(f"Cluster confidence dict size: {len(cluster_confidence)}")
     print(f"Confidence score statistics:")
-    print(f"  Min: {np.min(confidence_scores):.4f}")
-    print(f"  Max: {np.max(confidence_scores):.4f}")
+    print(f"  Min: {torch.min(confidence_scores).item():.4f}")
+    print(f"  Max: {torch.max(confidence_scores).item():.4f}")
     # Note: Samples with no valid cluster mapping have confidence = 0
     # This occurs when cluster has no pseudo label (pseudo_labels == -1)
     valid_mask = pseudo_labels_full != -1
     valid_confidence = confidence_scores[valid_mask]
     if len(valid_confidence) > 0:
-        print(f"  Mean (valid): {np.mean(valid_confidence):.4f}")
-        print(f"  Std (valid): {np.std(valid_confidence):.4f}")
+        print(f"  Mean (valid): {torch.mean(valid_confidence).item():.4f}")
+        print(f"  Std (valid): {torch.std(valid_confidence).item():.4f}")
     
     print("\n" + "="*60)
     print("All tests passed successfully!")

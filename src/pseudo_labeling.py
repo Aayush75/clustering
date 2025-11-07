@@ -14,6 +14,10 @@ from pathlib import Path
 import matplotlib.pyplot as plt
 
 
+# Constant to represent samples with no valid pseudo label
+NO_PSEUDO_LABEL = -1
+
+
 def find_k_nearest_to_centers(
     features: torch.Tensor,
     cluster_assignments: torch.Tensor,
@@ -135,11 +139,27 @@ def map_clusters_to_labels(
         Dictionary mapping cluster_id -> pseudo_label
         If return_confidence=True, returns (cluster_to_label, cluster_to_confidence)
     """
-    # Ensure inputs are tensors
+    # Ensure inputs are tensors and determine the device from k_nearest_indices
+    # Get device from first non-empty tensor in k_nearest_indices
+    device = None
+    for indices in k_nearest_indices.values():
+        if len(indices) > 0 and isinstance(indices, torch.Tensor):
+            device = indices.device
+            break
+    
+    # If no device found from indices, use CPU as default
+    if device is None:
+        device = torch.device('cpu')
+    
     if not isinstance(cluster_assignments, torch.Tensor):
-        cluster_assignments = torch.tensor(cluster_assignments)
+        cluster_assignments = torch.tensor(cluster_assignments, device=device)
+    else:
+        cluster_assignments = cluster_assignments.to(device)
+        
     if not isinstance(true_labels, torch.Tensor):
-        true_labels = torch.tensor(true_labels)
+        true_labels = torch.tensor(true_labels, device=device)
+    else:
+        true_labels = true_labels.to(device)
     
     cluster_to_label = {}
     cluster_to_confidence = {}
@@ -147,9 +167,12 @@ def map_clusters_to_labels(
     for cluster_id, sample_indices in k_nearest_indices.items():
         if len(sample_indices) == 0:
             # Empty cluster - no mapping
-            cluster_to_label[cluster_id] = -1
+            cluster_to_label[cluster_id] = NO_PSEUDO_LABEL
             cluster_to_confidence[cluster_id] = 0.0
             continue
+        
+        # Ensure sample_indices is on the same device as true_labels
+        sample_indices = sample_indices.to(device)
         
         # Get true labels for k nearest samples
         k_labels = true_labels[sample_indices]
@@ -191,11 +214,15 @@ def apply_pseudo_labels(
         cluster_assignments = torch.tensor(cluster_assignments)
     
     device = cluster_assignments.device
-    pseudo_labels = torch.zeros_like(cluster_assignments, dtype=torch.long, device=device)
+    pseudo_labels = torch.full_like(cluster_assignments, NO_PSEUDO_LABEL, dtype=torch.long, device=device)
     
-    mapping = torch.tensor([cluster_to_label.get(int(c), -1) for c in range(len(cluster_to_label))],
-                       dtype=torch.long, device=cluster_assignments.device)
-    pseudo_labels = mapping[cluster_assignments]
+    # Vectorized approach for better performance
+    unique_clusters = torch.unique(cluster_assignments)
+    for cluster_id in unique_clusters:
+        cluster_id_int = int(cluster_id.item())
+        if cluster_id_int in cluster_to_label:
+            mask = cluster_assignments == cluster_id
+            pseudo_labels[mask] = cluster_to_label[cluster_id_int]
     
     return pseudo_labels
 
@@ -207,39 +234,72 @@ def compute_sample_confidence_scores(
     cluster_to_label: Dict[int, int],
     cluster_to_confidence: Dict[int, float]
 ) -> torch.Tensor:
-
+    """
+    Compute sample-wise confidence scores for pseudo labels (PyTorch-native).
+    
+    The confidence score for each sample is based on:
+    1. Distance to cluster center (closer = higher confidence)
+    2. Cluster purity (from k-nearest samples majority vote)
+    
+    Args:
+        features: Feature tensor of shape (n_samples, n_features)
+        cluster_assignments: Cluster assignments of shape (n_samples,)
+        cluster_centers: Cluster centers of shape (n_clusters, n_features)
+        cluster_to_label: Dictionary mapping cluster_id -> pseudo_label
+        cluster_to_confidence: Dictionary mapping cluster_id -> cluster confidence
+        
+    Returns:
+        Confidence scores of shape (n_samples,) with values in [0, 1]
+    """
+    # Ensure all inputs are tensors on the same device
     device = features.device
-
-    cluster_assignments = cluster_assignments.to(device)
-    cluster_centers = cluster_centers.to(device)
-
+    if not isinstance(cluster_assignments, torch.Tensor):
+        cluster_assignments = torch.tensor(cluster_assignments, device=device)
+    else:
+        cluster_assignments = cluster_assignments.to(device)
+    
+    if not isinstance(cluster_centers, torch.Tensor):
+        cluster_centers = torch.tensor(cluster_centers, device=device)
+    else:
+        cluster_centers = cluster_centers.to(device)
+    
+    features = features.to(device)
+    
+    # Normalize features and centers for cosine similarity
     features_norm = torch.nn.functional.normalize(features, p=2, dim=1)
     centers_norm = torch.nn.functional.normalize(cluster_centers, p=2, dim=1)
-
-    # shape: (num_clusters,)
-    cluster_conf_tensor = torch.zeros(len(cluster_centers), device=device)
-    for cid, conf in cluster_to_confidence.items():
-        cluster_conf_tensor[cid] = conf
-
-    safe_assignments = cluster_assignments.clone()
-    safe_assignments[safe_assignments < 0] = 0
-
-    chosen_centers = centers_norm[safe_assignments]     # (N, D)
-
-    similarities = (features_norm * chosen_centers).sum(dim=1)  # (N,)
-    distance_conf = (similarities + 1) / 2.0                     # map [-1,1] → [0,1]
-    distance_conf = torch.clamp(distance_conf, 0.0, 1.0)
-
-    cluster_conf_vals = cluster_conf_tensor[safe_assignments]
-    cluster_conf_vals = torch.clamp(cluster_conf_vals, 0.0, 1.0)
-
-    confidence_scores = torch.sqrt(cluster_conf_vals * distance_conf)
-
-    invalid_mask = cluster_assignments == -1
-    confidence_scores[invalid_mask] = 0.0
-
+    
+    n_samples = len(cluster_assignments)
+    confidence_scores = torch.zeros(n_samples, device=device)
+    
+    for i in range(n_samples):
+        cluster_id = int(cluster_assignments[i].item())
+        
+        # Get cluster confidence (from k-nearest majority vote)
+        cluster_conf = cluster_to_confidence.get(cluster_id, 0.0)
+        
+        # Skip if cluster has no valid mapping
+        if cluster_to_label.get(cluster_id, NO_PSEUDO_LABEL) == NO_PSEUDO_LABEL:
+            confidence_scores[i] = 0.0
+            continue
+        
+        # Compute distance-based confidence
+        if cluster_id < len(centers_norm):
+            # Compute cosine similarity to cluster center
+            similarity = torch.dot(features_norm[i], centers_norm[cluster_id])
+            # Convert to confidence (similarity ranges from -1 to 1, map to 0-1)
+            distance_conf = (similarity + 1) / 2.0
+        else:
+            distance_conf = 0.0
+        
+        # Combine cluster confidence and distance confidence
+        # Use geometric mean for balanced combination
+        # Ensure non-negative values to avoid NaN in sqrt
+        cluster_conf = max(0.0, cluster_conf)
+        distance_conf = max(0.0, distance_conf.item() if isinstance(distance_conf, torch.Tensor) else distance_conf)
+        confidence_scores[i] = torch.sqrt(torch.tensor(cluster_conf * distance_conf, device=device))
+    
     return confidence_scores
-
 
 
 def compute_pseudo_label_accuracy(
@@ -256,20 +316,20 @@ def compute_pseudo_label_accuracy(
     Returns:
         Accuracy as a float between 0 and 1
     """
-    # Ensure inputs are tensors
+    # Ensure inputs are tensors on the same device
     if not isinstance(pseudo_labels, torch.Tensor):
         pseudo_labels = torch.tensor(pseudo_labels)
     if not isinstance(true_labels, torch.Tensor):
         true_labels = torch.tensor(true_labels)
     
-    # Filter out samples with no pseudo label (-1)
-    valid_mask = pseudo_labels != -1
+    # Move true_labels to same device as pseudo_labels
+    true_labels = true_labels.to(pseudo_labels.device)
+    
+    # Filter out samples with no pseudo label
+    valid_mask = pseudo_labels != NO_PSEUDO_LABEL
     
     if not torch.any(valid_mask):
         return 0.0
-    
-    device  = pseudo_labels.device
-    true_labels = true_labels.to(device)
     
     accuracy = torch.mean((pseudo_labels[valid_mask] == true_labels[valid_mask]).float()).item()
     return accuracy
@@ -391,7 +451,7 @@ def visualize_cluster_mapping(
             ax.set_yticks([])
         
         # Add cluster info as ylabel for first column
-        if class_names and pseudo_label != -1:
+        if class_names and pseudo_label != NO_PSEUDO_LABEL:
             ylabel = f"Cluster {cluster_id}\n→ {class_names[pseudo_label]}"
         else:
             ylabel = f"Cluster {cluster_id}\n→ Label {pseudo_label}"
@@ -421,75 +481,92 @@ def print_cluster_mapping_summary(
     cluster_to_confidence: Optional[Dict[int, float]] = None,
     confidence_scores: Optional[torch.Tensor] = None
 ) -> None:
-
+    """
+    Print a summary of the cluster-to-label mapping with confidence scores.
+    
+    Args:
+        cluster_to_label: Dictionary mapping cluster_id -> pseudo_label
+        cluster_assignments: Cluster assignments of shape (n_samples,)
+        true_labels: True labels of shape (n_samples,)
+        class_names: Optional list of class names for better readability
+        cluster_to_confidence: Optional dictionary mapping cluster_id -> confidence
+        confidence_scores: Optional sample-wise confidence scores
+    """
     print("\n" + "="*80)
     print("Cluster-to-Label Mapping Summary")
     print("="*80)
-
+    
+    # Ensure inputs are tensors on the same device
     if not isinstance(cluster_assignments, torch.Tensor):
         cluster_assignments = torch.tensor(cluster_assignments)
     if not isinstance(true_labels, torch.Tensor):
         true_labels = torch.tensor(true_labels)
-
+    
+    # Ensure both tensors are on the same device
     device = cluster_assignments.device
     true_labels = true_labels.to(device)
-
-    pseudo_labels = apply_pseudo_labels(cluster_assignments, cluster_to_label).to(device)
-
+    
+    # Apply pseudo labels
+    pseudo_labels = apply_pseudo_labels(cluster_assignments, cluster_to_label)
+    
+    # Compute accuracy
     accuracy = compute_pseudo_label_accuracy(pseudo_labels, true_labels)
-
+    
     print(f"\nOverall Pseudo-Label Accuracy: {accuracy:.4f} ({accuracy*100:.2f}%)")
     print(f"\nTotal Clusters: {len(cluster_to_label)}")
-    print(f"Empty Clusters: {sum(1 for v in cluster_to_label.values() if v == -1)}")
-
+    print(f"Empty Clusters: {sum(1 for v in cluster_to_label.values() if v == NO_PSEUDO_LABEL)}")
+    
+    # Print confidence statistics if available
     if confidence_scores is not None:
         if not isinstance(confidence_scores, torch.Tensor):
             confidence_scores = torch.tensor(confidence_scores)
+        # Ensure confidence_scores is on the same device
         confidence_scores = confidence_scores.to(device)
-
-        valid_mask = (pseudo_labels != -1).to(device)
+        valid_mask = pseudo_labels != NO_PSEUDO_LABEL
         if torch.any(valid_mask):
-            avg_confidence = confidence_scores[valid_mask].mean().item()
-            cmin = confidence_scores[valid_mask].min().item()
-            cmax = confidence_scores[valid_mask].max().item()
+            avg_confidence = torch.mean(confidence_scores[valid_mask]).item()
             print(f"Average Sample Confidence: {avg_confidence:.4f}")
-            print(f"Confidence Range: [{cmin:.4f}, {cmax:.4f}]")
-
+            print(f"Confidence Range: [{torch.min(confidence_scores[valid_mask]).item():.4f}, "
+                  f"{torch.max(confidence_scores[valid_mask]).item():.4f}]")
+    
+    # Show per-cluster mapping
     print("\nCluster Mappings:")
     print("-" * 95)
     if cluster_to_confidence is not None:
-        print(f"{'Cluster ID':<12} {'→':<3} {'Pseudo Label':<20} {'Cluster Size':<15} {'Accuracy':<12} {'Confidence':<10}")
+        print(f"{'Cluster ID':<12} {'→':<3} {'Pseudo Label':<20} {'Cluster Size':<15} "
+              f"{'Accuracy':<12} {'Confidence':<10}")
     else:
         print(f"{'Cluster ID':<12} {'→':<3} {'Pseudo Label':<20} {'Cluster Size':<15} {'Accuracy':<10}")
     print("-" * 95)
-
+    
     for cluster_id in sorted(cluster_to_label.keys()):
         pseudo_label = cluster_to_label[cluster_id]
-
-        cluster_mask = (cluster_assignments == cluster_id).to(device)
-        cluster_size = cluster_mask.sum().item()
-
+        
+        # Get samples in this cluster
+        cluster_mask = cluster_assignments == cluster_id
+        cluster_size = torch.sum(cluster_mask).item()
+        
         if cluster_size == 0:
             continue
-
-        if pseudo_label == -1:
-            cluster_accuracy = 0.0
-        else:
-            target_label = torch.tensor(pseudo_label, device=device)
-            cluster_true_labels = true_labels[cluster_mask]
-            cluster_accuracy = (cluster_true_labels == target_label).float().mean().item()
-
-        if class_names and pseudo_label != -1:
+        
+        # Compute per-cluster accuracy
+        cluster_true_labels = true_labels[cluster_mask]
+        cluster_accuracy = torch.mean((cluster_true_labels == pseudo_label).float()).item() if pseudo_label != NO_PSEUDO_LABEL else 0.0
+        
+        # Format label
+        if class_names and pseudo_label != NO_PSEUDO_LABEL:
             label_str = f"{pseudo_label} ({class_names[pseudo_label]})"
         else:
             label_str = str(pseudo_label)
-
+        
+        # Print with or without confidence
         if cluster_to_confidence is not None:
             cluster_conf = cluster_to_confidence.get(cluster_id, 0.0)
-            print(f"{cluster_id:<12} {'→':<3} {label_str:<20} {cluster_size:<15} {cluster_accuracy:<12.4f} {cluster_conf:<10.4f}")
+            print(f"{cluster_id:<12} {'→':<3} {label_str:<20} {cluster_size:<15} "
+                  f"{cluster_accuracy:<12.4f} {cluster_conf:<10.4f}")
         else:
             print(f"{cluster_id:<12} {'→':<3} {label_str:<20} {cluster_size:<15} {cluster_accuracy:.4f}")
-
+    
     print("-" * 95)
     print()
 
@@ -566,9 +643,8 @@ def generate_pseudo_labels(
         print(f"Pseudo-Label Accuracy: {accuracy:.4f} ({accuracy*100:.2f}%)")
         
         if confidence_scores is not None:
-            valid_mask = pseudo_labels != -1
+            valid_mask = pseudo_labels != NO_PSEUDO_LABEL
             if torch.any(valid_mask):
-                valid_mask = valid_mask.to(confidence_scores.device)
                 avg_confidence = torch.mean(confidence_scores[valid_mask]).item()
                 print(f"Average Confidence Score: {avg_confidence:.4f}")
                 print(f"Confidence Score Range: [{torch.min(confidence_scores[valid_mask]).item():.4f}, "
