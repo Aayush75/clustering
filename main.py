@@ -362,7 +362,7 @@ def evaluate_results(args, clusterer, train_features, train_labels,
     # Evaluate training set
     print("\nEvaluating training set...")
     train_results = evaluate_clustering(
-        train_labels.numpy(),
+        train_labels,
         train_predictions,
         return_confusion_matrix=False
     )
@@ -375,7 +375,7 @@ def evaluate_results(args, clusterer, train_features, train_labels,
     # Evaluate test set
     print("\nEvaluating test set...")
     test_results = evaluate_clustering(
-        test_labels.numpy(),
+        test_labels,
         test_predictions,
         return_confusion_matrix=False
     )
@@ -413,15 +413,15 @@ def evaluate_results(args, clusterer, train_features, train_labels,
     
     print(f"\nResults saved to {results_path}")
     
-    # Save predictions
+    # Save predictions (convert to numpy only for saving to file)
     predictions_path = experiment_dir / "predictions.npz"
     import numpy as np
     np.savez(
         predictions_path,
-        train_predictions=train_predictions,
-        train_labels=train_labels.numpy(),
-        test_predictions=test_predictions,
-        test_labels=test_labels.numpy()
+        train_predictions=train_predictions.cpu().numpy() if isinstance(train_predictions, torch.Tensor) else train_predictions,
+        train_labels=train_labels.cpu().numpy() if isinstance(train_labels, torch.Tensor) else train_labels,
+        test_predictions=test_predictions.cpu().numpy() if isinstance(test_predictions, torch.Tensor) else test_predictions,
+        test_labels=test_labels.cpu().numpy() if isinstance(test_labels, torch.Tensor) else test_labels
     )
     print(f"Predictions saved to {predictions_path}")
     
@@ -433,10 +433,10 @@ def evaluate_results(args, clusterer, train_features, train_labels,
         
         viz_dir = experiment_dir / "visualizations"
         
-        # Visualize training set
+        # Visualize training set (pass torch tensors directly)
         visualize_clustering_results(
-            features=train_features.numpy(),
-            labels=train_labels.numpy(),
+            features=train_features,
+            labels=train_labels,
             predictions=train_predictions,
             num_clusters=args.num_clusters,
             output_dir=str(viz_dir),
@@ -445,10 +445,10 @@ def evaluate_results(args, clusterer, train_features, train_labels,
             show_plots=args.show_plots
         )
         
-        # Visualize test set
+        # Visualize test set (pass torch tensors directly)
         visualize_clustering_results(
-            features=test_features.numpy(),
-            labels=test_labels.numpy(),
+            features=test_features,
+            labels=test_labels,
             predictions=test_predictions,
             num_clusters=args.num_clusters,
             output_dir=str(viz_dir),
@@ -508,7 +508,7 @@ def generate_and_save_pseudo_labels(
     train_pseudo_labels, train_cluster_to_label, train_k_nearest, train_confidence, train_cluster_confidence = generate_pseudo_labels(
         features=train_features,
         cluster_assignments=train_predictions,
-        true_labels=train_labels.numpy() if isinstance(train_labels, torch.Tensor) else train_labels,
+        true_labels=train_labels,
         cluster_centers=clusterer.cluster_centers,
         k=args.k_samples,
         verbose=True,
@@ -518,7 +518,7 @@ def generate_and_save_pseudo_labels(
     print_cluster_mapping_summary(
         train_cluster_to_label,
         train_predictions,
-        train_labels.numpy() if isinstance(train_labels, torch.Tensor) else train_labels,
+        train_labels,
         class_names,
         cluster_to_confidence=train_cluster_confidence,
         confidence_scores=train_confidence
@@ -529,7 +529,7 @@ def generate_and_save_pseudo_labels(
     test_pseudo_labels, test_cluster_to_label, test_k_nearest, test_confidence, test_cluster_confidence = generate_pseudo_labels(
         features=test_features,
         cluster_assignments=test_predictions,
-        true_labels=test_labels.numpy() if isinstance(test_labels, torch.Tensor) else test_labels,
+        true_labels=test_labels,
         cluster_centers=clusterer.cluster_centers,
         k=args.k_samples,
         verbose=True,
@@ -539,28 +539,28 @@ def generate_and_save_pseudo_labels(
     print_cluster_mapping_summary(
         test_cluster_to_label,
         test_predictions,
-        test_labels.numpy() if isinstance(test_labels, torch.Tensor) else test_labels,
+        test_labels,
         class_names,
         cluster_to_confidence=test_cluster_confidence,
         confidence_scores=test_confidence
     )
     
-    # Save pseudo labels
+    # Save pseudo labels (convert to numpy/list only for JSON serialization)
     pseudo_labels_dir = experiment_dir / "pseudo_labels"
     pseudo_labels_dir.mkdir(exist_ok=True)
     
     results = {
         'k_samples': args.k_samples,
-        'train_pseudo_labels': train_pseudo_labels.tolist(),
+        'train_pseudo_labels': train_pseudo_labels.cpu().tolist() if isinstance(train_pseudo_labels, torch.Tensor) else train_pseudo_labels.tolist(),
         'train_cluster_to_label': {int(k): int(v) for k, v in train_cluster_to_label.items()},
         'train_cluster_to_confidence': {int(k): float(v) for k, v in train_cluster_confidence.items()},
-        'train_confidence_scores': train_confidence.tolist(),
-        'train_k_nearest_indices': {int(k): v.tolist() for k, v in train_k_nearest.items()},
-        'test_pseudo_labels': test_pseudo_labels.tolist(),
+        'train_confidence_scores': train_confidence.cpu().tolist() if isinstance(train_confidence, torch.Tensor) else train_confidence.tolist() if train_confidence is not None else None,
+        'train_k_nearest_indices': {int(k): (v.cpu().tolist() if isinstance(v, torch.Tensor) else v.tolist()) for k, v in train_k_nearest.items()},
+        'test_pseudo_labels': test_pseudo_labels.cpu().tolist() if isinstance(test_pseudo_labels, torch.Tensor) else test_pseudo_labels.tolist(),
         'test_cluster_to_label': {int(k): int(v) for k, v in test_cluster_to_label.items()},
         'test_cluster_to_confidence': {int(k): float(v) for k, v in test_cluster_confidence.items()},
-        'test_confidence_scores': test_confidence.tolist(),
-        'test_k_nearest_indices': {int(k): v.tolist() for k, v in test_k_nearest.items()}
+        'test_confidence_scores': test_confidence.cpu().tolist() if isinstance(test_confidence, torch.Tensor) else test_confidence.tolist() if test_confidence is not None else None,
+        'test_k_nearest_indices': {int(k): (v.cpu().tolist() if isinstance(v, torch.Tensor) else v.tolist()) for k, v in test_k_nearest.items()}
     }
     
     results_path = pseudo_labels_dir / f"pseudo_labels_k{args.k_samples}.json"
@@ -582,17 +582,17 @@ def generate_and_save_pseudo_labels(
                 dataset_name=args.dataset
             )
             
-            # Get all training images
+            # Get all training images (keep as torch tensor until final visualization step)
             all_images = []
             for images, _ in train_loader:
                 all_images.append(images)
-            all_images = torch.cat(all_images, dim=0).cpu().numpy()
+            all_images = torch.cat(all_images, dim=0)
             
             # Generate visualization
             viz_path = pseudo_labels_dir / f"cluster_mapping_k{args.k_samples}.png"
             visualize_cluster_mapping(
                 images=all_images,
-                true_labels=train_labels.numpy() if isinstance(train_labels, torch.Tensor) else train_labels,
+                true_labels=train_labels,
                 cluster_assignments=train_predictions,
                 cluster_to_label=train_cluster_to_label,
                 k_nearest_indices=train_k_nearest,

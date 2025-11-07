@@ -342,22 +342,16 @@ def main():
                 import torch
                 print("\nLoading features for visualization...")
                 
-                # Load features
+                # Load features (keep as tensors - visualization functions handle conversion)
                 train_data = torch.load(train_features_path)
                 test_data = torch.load(test_features_path)
                 
                 train_features = train_data['features']
                 test_features = test_data['features']
                 
-                # Convert to numpy
-                if not isinstance(train_features, np.ndarray):
-                    train_features = train_features.numpy()
-                if not isinstance(test_features, np.ndarray):
-                    test_features = test_features.numpy()
-                
                 viz_dir = experiment_dir / "visualizations"
                 
-                # Visualize training set
+                # Visualize training set (pass tensors directly)
                 visualize_clustering_results(
                     features=train_features,
                     labels=preds['train_labels'],
@@ -369,7 +363,7 @@ def main():
                     show_plots=args.show_plots
                 )
                 
-                # Visualize test set
+                # Visualize test set (pass tensors directly)
                 visualize_clustering_results(
                     features=test_features,
                     labels=preds['test_labels'],

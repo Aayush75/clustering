@@ -13,8 +13,6 @@ import torch.nn as nn
 import torch.nn.functional as F
 from torch.optim import Adam, SGD
 from typing import Optional, Tuple, Dict
-import numpy as np
-from sklearn.cluster import KMeans
 from tqdm import tqdm
 import os
 
@@ -183,7 +181,7 @@ class TEMIClusterer:
     
     def initialize_clusters(self, features: torch.Tensor):
         """
-        Initialize cluster assignments using K-means.
+        Initialize cluster assignments using K-means (PyTorch-native implementation).
         
         This provides a warm start for the TEMI algorithm, as recommended
         in the paper. K-means gives reasonable initial cluster assignments.
@@ -192,22 +190,75 @@ class TEMIClusterer:
         Args:
             features: Input features of shape (num_samples, feature_dim)
         """
-        print("Initializing clusters with K-means...")
+        print("Initializing clusters with K-means (PyTorch-native)...")
         
-        # Run K-means on CPU for stability
-        features_np = features.cpu().numpy()
-        kmeans = KMeans(
-            n_clusters=self.num_clusters,
-            n_init=20,
-            max_iter=300,
-            random_state=0
-        )
-        kmeans.fit(features_np)
+        # Ensure features are on the correct device
+        features = features.to(self.device)
         
-        # Store cluster centers
-        self.cluster_centers = torch.from_numpy(kmeans.cluster_centers_).to(self.device)
+        # PyTorch-native K-means implementation
+        num_samples = features.shape[0]
         
-        print(f"K-means initialization complete. Inertia: {kmeans.inertia_:.2f}")
+        # Initialize cluster centers randomly from data points
+        indices = torch.randperm(num_samples, device=self.device)[:self.num_clusters]
+        cluster_centers = features[indices].clone()
+        
+        # K-means iterations
+        max_iters = 300
+        n_init = 20
+        best_inertia = float('inf')
+        best_centers = None
+        best_labels = None
+        
+        for init_idx in range(n_init):
+            # Random initialization for this run
+            if init_idx > 0:
+                indices = torch.randperm(num_samples, device=self.device)[:self.num_clusters]
+                cluster_centers = features[indices].clone()
+            
+            for iter_idx in range(max_iters):
+                # Assign samples to nearest cluster (using cosine similarity)
+                # Normalize features and centers
+                features_norm = F.normalize(features, p=2, dim=1)
+                centers_norm = F.normalize(cluster_centers, p=2, dim=1)
+                
+                # Compute cosine similarity (batch_size, num_clusters)
+                similarities = torch.mm(features_norm, centers_norm.t())
+                
+                # Assign to nearest cluster (highest similarity)
+                labels = torch.argmax(similarities, dim=1)
+                
+                # Update cluster centers
+                new_centers = torch.zeros_like(cluster_centers)
+                for k in range(self.num_clusters):
+                    mask = labels == k
+                    if mask.sum() > 0:
+                        new_centers[k] = features[mask].mean(dim=0)
+                    else:
+                        # Keep old center if cluster is empty
+                        new_centers[k] = cluster_centers[k]
+                
+                # Check convergence
+                center_shift = torch.norm(new_centers - cluster_centers)
+                cluster_centers = new_centers
+                
+                if center_shift < 1e-4:
+                    break
+            
+            # Compute inertia (sum of squared distances to nearest center)
+            distances = 1 - similarities  # Convert similarity to distance
+            min_distances = torch.min(distances, dim=1)[0]
+            inertia = torch.sum(min_distances ** 2).item()
+            
+            # Keep best result
+            if inertia < best_inertia:
+                best_inertia = inertia
+                best_centers = cluster_centers.clone()
+                best_labels = labels.clone()
+        
+        # Store best cluster centers
+        self.cluster_centers = best_centers
+        
+        print(f"K-means initialization complete. Inertia: {best_inertia:.2f}")
         
         # Initialize cluster layer with K-means centers in projection space
         # First, project the K-means centers through the projection network
@@ -226,7 +277,7 @@ class TEMIClusterer:
         self.model.train()
         print(f"Cluster layer initialized with K-means centers in projection space")
         
-        return kmeans.labels_
+        return best_labels
     
     def sinkhorn_knopp(self, logits: torch.Tensor, num_iters: int = 5) -> torch.Tensor:
         """
@@ -498,7 +549,8 @@ class TEMIClusterer:
             else:
                 # Cosine annealing: smoothly decrease from lr to 0.1*lr
                 progress_after_warmup = (epoch - warmup_epochs) / (num_epochs - warmup_epochs)
-                lr = self.learning_rate * (0.1 + 0.9 * (1 + np.cos(np.pi * progress_after_warmup)) / 2)
+                # Using torch.pi for better readability and precision
+                lr = self.learning_rate * (0.1 + 0.9 * (1 + torch.cos(torch.tensor(torch.pi * progress_after_warmup)).item()) / 2)
             
             for param_group in self.optimizer.param_groups:
                 param_group['lr'] = lr
@@ -522,7 +574,7 @@ class TEMIClusterer:
         print("Training complete!")
         return history
     
-    def predict(self, features: torch.Tensor, batch_size: int = 256) -> np.ndarray:
+    def predict(self, features: torch.Tensor, batch_size: int = 256) -> torch.Tensor:
         """
         Predict cluster assignments for input features.
         
@@ -531,7 +583,7 @@ class TEMIClusterer:
             batch_size: Batch size for inference
             
         Returns:
-            Cluster assignments as numpy array
+            Cluster assignments as torch tensor
         """
         self.model.eval()
         
@@ -546,9 +598,9 @@ class TEMIClusterer:
                 
                 batch_features = features[start_idx:end_idx].to(self.device)
                 assignments = self.model.get_cluster_assignments(batch_features)
-                all_assignments.append(assignments.cpu())
+                all_assignments.append(assignments)
         
-        return torch.cat(all_assignments).numpy()
+        return torch.cat(all_assignments)
     
     def save_checkpoint(self, path: str, epoch: int, history: dict):
         """

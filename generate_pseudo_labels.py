@@ -153,7 +153,7 @@ def load_dataset_for_visualization(config: dict, data_root: str):
         dataset_name=dataset_name
     )
     
-    # Get all training images and labels
+    # Get all training images and labels (keep as tensors)
     all_images = []
     all_labels = []
     
@@ -161,8 +161,8 @@ def load_dataset_for_visualization(config: dict, data_root: str):
         all_images.append(images)
         all_labels.append(labels)
     
-    all_images = torch.cat(all_images, dim=0).cpu().numpy()
-    all_labels = torch.cat(all_labels, dim=0).cpu().numpy()
+    all_images = torch.cat(all_images, dim=0)
+    all_labels = torch.cat(all_labels, dim=0)
     
     # Get class names if available
     class_names = None

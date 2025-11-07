@@ -5,11 +5,12 @@ This module provides functionality to visualize high-dimensional clustering
 results using dimensionality reduction techniques like t-SNE and UMAP.
 """
 
+import torch
 import numpy as np
 import matplotlib.pyplot as plt
 from sklearn.manifold import TSNE
 from pathlib import Path
-from typing import Optional, Tuple
+from typing import Optional, Tuple, Union
 import warnings
 
 try:
@@ -21,9 +22,9 @@ except ImportError:
 
 
 def plot_clusters_tsne(
-    features: np.ndarray,
-    labels: np.ndarray,
-    predictions: np.ndarray,
+    features: Union[torch.Tensor, np.ndarray],
+    labels: Union[torch.Tensor, np.ndarray],
+    predictions: Union[torch.Tensor, np.ndarray],
     save_path: Optional[str] = None,
     title: str = "Cluster Visualization (t-SNE)",
     perplexity: int = 30,
@@ -40,9 +41,9 @@ def plot_clusters_tsne(
     - Right: colored by ground truth labels
     
     Args:
-        features: Feature array of shape (n_samples, n_features)
-        labels: Ground truth labels of shape (n_samples,)
-        predictions: Predicted cluster labels of shape (n_samples,)
+        features: Feature array of shape (n_samples, n_features) - torch.Tensor or np.ndarray
+        labels: Ground truth labels of shape (n_samples,) - torch.Tensor or np.ndarray
+        predictions: Predicted cluster labels of shape (n_samples,) - torch.Tensor or np.ndarray
         save_path: Path to save the plot (if None, plot is not saved)
         title: Title for the plot
         perplexity: t-SNE perplexity parameter (default: 30)
@@ -53,12 +54,14 @@ def plot_clusters_tsne(
     """
     print(f"Running t-SNE with perplexity={perplexity}, n_iter={n_iter}...")
     
-    # Convert to numpy if needed
-    if not isinstance(features, np.ndarray):
-        features = features.numpy()
-    if not isinstance(labels, np.ndarray):
-        labels = labels.numpy()
-    if not isinstance(predictions, np.ndarray):
+    # Convert to numpy only at the final step for sklearn compatibility
+    if isinstance(features, torch.Tensor):
+        features = features.cpu().numpy()
+    if isinstance(labels, torch.Tensor):
+        labels = labels.cpu().numpy()
+    if isinstance(predictions, torch.Tensor):
+        predictions = predictions.cpu().numpy()
+    elif not isinstance(predictions, np.ndarray):
         predictions = np.array(predictions)
     
     # Apply t-SNE
@@ -120,9 +123,9 @@ def plot_clusters_tsne(
 
 
 def plot_clusters_umap(
-    features: np.ndarray,
-    labels: np.ndarray,
-    predictions: np.ndarray,
+    features: Union[torch.Tensor, np.ndarray],
+    labels: Union[torch.Tensor, np.ndarray],
+    predictions: Union[torch.Tensor, np.ndarray],
     save_path: Optional[str] = None,
     title: str = "Cluster Visualization (UMAP)",
     n_neighbors: int = 15,
@@ -139,9 +142,9 @@ def plot_clusters_umap(
     - Right: colored by ground truth labels
     
     Args:
-        features: Feature array of shape (n_samples, n_features)
-        labels: Ground truth labels of shape (n_samples,)
-        predictions: Predicted cluster labels of shape (n_samples,)
+        features: Feature array of shape (n_samples, n_features) - torch.Tensor or np.ndarray
+        labels: Ground truth labels of shape (n_samples,) - torch.Tensor or np.ndarray
+        predictions: Predicted cluster labels of shape (n_samples,) - torch.Tensor or np.ndarray
         save_path: Path to save the plot (if None, plot is not saved)
         title: Title for the plot
         n_neighbors: UMAP n_neighbors parameter (default: 15)
@@ -157,12 +160,14 @@ def plot_clusters_umap(
     
     print(f"Running UMAP with n_neighbors={n_neighbors}, min_dist={min_dist}...")
     
-    # Convert to numpy if needed
-    if not isinstance(features, np.ndarray):
-        features = features.numpy()
-    if not isinstance(labels, np.ndarray):
-        labels = labels.numpy()
-    if not isinstance(predictions, np.ndarray):
+    # Convert to numpy only at the final step for sklearn compatibility
+    if isinstance(features, torch.Tensor):
+        features = features.cpu().numpy()
+    if isinstance(labels, torch.Tensor):
+        labels = labels.cpu().numpy()
+    if isinstance(predictions, torch.Tensor):
+        predictions = predictions.cpu().numpy()
+    elif not isinstance(predictions, np.ndarray):
         predictions = np.array(predictions)
     
     # Apply UMAP
