@@ -585,7 +585,7 @@ class TEMIClusterer:
         Returns:
             Tuple of (epoch, history)
         """
-        checkpoint = torch.load(path, map_location=self.device, weights_only=False)
+        checkpoint = torch.load(path, map_location=self.device)
         
         # Check if architecture parameters match
         if 'feature_dim' in checkpoint:

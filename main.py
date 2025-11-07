@@ -28,6 +28,12 @@ from src.evaluation import (
     print_cluster_distribution
 )
 from src.visualization import visualize_clustering_results
+from src.pseudo_labeling import (
+    generate_pseudo_labels,
+    print_cluster_mapping_summary,
+    visualize_cluster_mapping,
+    map_clusters_to_labels
+)
 
 
 def parse_arguments():
@@ -104,6 +110,18 @@ def parse_arguments():
                         help='Dimensionality reduction method for visualization')
     parser.add_argument('--show_plots', action='store_true',
                         help='Display plots interactively (in addition to saving them)')
+    
+    # Pseudo-labeling arguments
+    parser.add_argument('--generate_pseudo_labels', action='store_true',
+                        help='Generate pseudo labels by mapping clusters to actual labels')
+    parser.add_argument('--k_samples', type=int, default=10,
+                        help='Number of nearest samples to cluster center for pseudo label assignment')
+    parser.add_argument('--visualize_mapping', action='store_true',
+                        help='Generate visualization of cluster-to-label mappings')
+    parser.add_argument('--max_clusters_viz', type=int, default=20,
+                        help='Maximum number of clusters to visualize in mapping')
+    parser.add_argument('--samples_per_cluster', type=int, default=5,
+                        help='Number of samples to show per cluster in mapping visualization')
     
     # Device arguments
     parser.add_argument('--device', type=str, default='cuda',
@@ -442,6 +460,155 @@ def evaluate_results(args, clusterer, train_features, train_labels,
         print(f"\nVisualizations saved to {viz_dir}")
 
 
+def generate_and_save_pseudo_labels(
+    args,
+    clusterer,
+    train_features: torch.Tensor,
+    train_labels: torch.Tensor,
+    test_features: torch.Tensor,
+    test_labels: torch.Tensor,
+    experiment_dir: Path
+):
+    """
+    Generate pseudo labels for clusters and save results.
+    
+    Args:
+        args: Command line arguments
+        clusterer: Trained TEMI clusterer
+        train_features: Training features
+        train_labels: Training labels
+        test_features: Test features
+        test_labels: Test labels
+        experiment_dir: Experiment directory
+    """
+    print("\n" + "="*60)
+    print("Step 4: Pseudo Label Generation")
+    print("="*60)
+    
+    # Get cluster assignments
+    print("\nComputing cluster assignments...")
+    train_predictions = clusterer.predict(train_features)
+    test_predictions = clusterer.predict(test_features)
+    
+    # Get class names if available
+    class_names = None
+    if args.dataset.lower() == 'cifar100':
+        try:
+            from torchvision.datasets import CIFAR100
+            cifar = CIFAR100(root=args.data_root, train=True, download=False)
+            class_names = cifar.classes
+        except Exception as e:
+            print(f"Could not load class names: {e}")
+    elif args.dataset.lower() == 'imagenet':
+        # ImageNet has 1000 classes
+        class_names = [f"Class_{i}" for i in range(1000)]
+    
+    # Generate pseudo labels for training set
+    print("\n>>> Training Set <<<")
+    train_pseudo_labels, train_cluster_to_label, train_k_nearest, train_confidence, train_cluster_confidence = generate_pseudo_labels(
+        features=train_features,
+        cluster_assignments=train_predictions,
+        true_labels=train_labels.numpy() if isinstance(train_labels, torch.Tensor) else train_labels,
+        cluster_centers=clusterer.cluster_centers,
+        k=args.k_samples,
+        verbose=True,
+        return_confidence=True
+    )
+    
+    print_cluster_mapping_summary(
+        train_cluster_to_label,
+        train_predictions,
+        train_labels.numpy() if isinstance(train_labels, torch.Tensor) else train_labels,
+        class_names,
+        cluster_to_confidence=train_cluster_confidence,
+        confidence_scores=train_confidence
+    )
+    
+    # Generate pseudo labels for test set
+    print("\n>>> Test Set <<<")
+    test_pseudo_labels, test_cluster_to_label, test_k_nearest, test_confidence, test_cluster_confidence = generate_pseudo_labels(
+        features=test_features,
+        cluster_assignments=test_predictions,
+        true_labels=test_labels.numpy() if isinstance(test_labels, torch.Tensor) else test_labels,
+        cluster_centers=clusterer.cluster_centers,
+        k=args.k_samples,
+        verbose=True,
+        return_confidence=True
+    )
+    
+    print_cluster_mapping_summary(
+        test_cluster_to_label,
+        test_predictions,
+        test_labels.numpy() if isinstance(test_labels, torch.Tensor) else test_labels,
+        class_names,
+        cluster_to_confidence=test_cluster_confidence,
+        confidence_scores=test_confidence
+    )
+    
+    # Save pseudo labels
+    pseudo_labels_dir = experiment_dir / "pseudo_labels"
+    pseudo_labels_dir.mkdir(exist_ok=True)
+    
+    results = {
+        'k_samples': args.k_samples,
+        'train_pseudo_labels': train_pseudo_labels.tolist(),
+        'train_cluster_to_label': {int(k): int(v) for k, v in train_cluster_to_label.items()},
+        'train_cluster_to_confidence': {int(k): float(v) for k, v in train_cluster_confidence.items()},
+        'train_confidence_scores': train_confidence.tolist(),
+        'train_k_nearest_indices': {int(k): v.tolist() for k, v in train_k_nearest.items()},
+        'test_pseudo_labels': test_pseudo_labels.tolist(),
+        'test_cluster_to_label': {int(k): int(v) for k, v in test_cluster_to_label.items()},
+        'test_cluster_to_confidence': {int(k): float(v) for k, v in test_cluster_confidence.items()},
+        'test_confidence_scores': test_confidence.tolist(),
+        'test_k_nearest_indices': {int(k): v.tolist() for k, v in test_k_nearest.items()}
+    }
+    
+    results_path = pseudo_labels_dir / f"pseudo_labels_k{args.k_samples}.json"
+    with open(results_path, 'w') as f:
+        json.dump(results, f, indent=4)
+    print(f"\nPseudo labels saved to {results_path}")
+    
+    # Generate visualization if requested
+    if args.visualize_mapping:
+        print("\nGenerating cluster-to-label mapping visualization...")
+        
+        try:
+            # Load dataset for visualization
+            print("Loading dataset images for visualization...")
+            train_loader, _ = create_data_loaders(
+                root=args.data_root,
+                batch_size=args.batch_size,
+                num_workers=args.num_workers,
+                dataset_name=args.dataset
+            )
+            
+            # Get all training images
+            all_images = []
+            for images, _ in train_loader:
+                all_images.append(images)
+            all_images = torch.cat(all_images, dim=0).cpu().numpy()
+            
+            # Generate visualization
+            viz_path = pseudo_labels_dir / f"cluster_mapping_k{args.k_samples}.png"
+            visualize_cluster_mapping(
+                images=all_images,
+                true_labels=train_labels.numpy() if isinstance(train_labels, torch.Tensor) else train_labels,
+                cluster_assignments=train_predictions,
+                cluster_to_label=train_cluster_to_label,
+                k_nearest_indices=train_k_nearest,
+                save_path=str(viz_path),
+                class_names=class_names,
+                max_clusters_to_show=args.max_clusters_viz,
+                samples_per_cluster=args.samples_per_cluster
+            )
+            
+            print(f"Visualization saved to {viz_path}")
+            
+        except (FileNotFoundError, ImportError, RuntimeError, ValueError) as e:
+            print(f"Warning: Could not generate visualization: {e}")
+            print("Pseudo labels were still generated successfully.")
+
+
 def main():
     """
     Main function to run the complete TEMI clustering pipeline.
@@ -492,6 +659,13 @@ def main():
         args, clusterer, train_features, train_labels,
         test_features, test_labels, experiment_dir
     )
+    
+    # Step 4: Generate pseudo labels if requested
+    if args.generate_pseudo_labels:
+        generate_and_save_pseudo_labels(
+            args, clusterer, train_features, train_labels,
+            test_features, test_labels, experiment_dir
+        )
     
     print("\n" + "="*60)
     print("Clustering pipeline completed successfully!")

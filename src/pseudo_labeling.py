@@ -269,9 +269,7 @@ def compute_pseudo_label_accuracy(
     if not np.any(valid_mask):
         return 0.0
     
-    correct = (pseudo_labels[valid_mask] == true_labels[valid_mask]).float()
-    accuracy = correct.mean().item()
-
+    accuracy = np.mean(pseudo_labels[valid_mask] == true_labels[valid_mask])
     return accuracy
 
 
