@@ -645,6 +645,7 @@ def generate_pseudo_labels(
         if confidence_scores is not None:
             valid_mask = pseudo_labels != NO_PSEUDO_LABEL
             if torch.any(valid_mask):
+                valid_mask = valid_mask.to(confidence_scores.device)
                 avg_confidence = torch.mean(confidence_scores[valid_mask]).item()
                 print(f"Average Confidence Score: {avg_confidence:.4f}")
                 print(f"Confidence Score Range: [{torch.min(confidence_scores[valid_mask]).item():.4f}, "
