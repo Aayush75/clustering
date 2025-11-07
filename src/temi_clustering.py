@@ -15,6 +15,7 @@ from torch.optim import Adam, SGD
 from typing import Optional, Tuple, Dict
 from tqdm import tqdm
 import os
+import warnings
 
 
 class TEMIClusteringHead(nn.Module):
@@ -198,9 +199,28 @@ class TEMIClusterer:
         # PyTorch-native K-means implementation
         num_samples = features.shape[0]
         
+        # Handle edge case: more clusters than samples
+        effective_num_clusters = min(self.num_clusters, num_samples)
+        if effective_num_clusters < self.num_clusters:
+            warnings.warn(
+                f"num_clusters ({self.num_clusters}) > num_samples ({num_samples}). "
+                f"Using {effective_num_clusters} clusters instead.",
+                RuntimeWarning
+            )
+        
         # Initialize cluster centers randomly from data points
-        indices = torch.randperm(num_samples, device=self.device)[:self.num_clusters]
+        indices = torch.randperm(num_samples, device=self.device)[:effective_num_clusters]
         cluster_centers = features[indices].clone()
+        
+        # If we have fewer samples than clusters, pad with random noise
+        if effective_num_clusters < self.num_clusters:
+            # Add random centers for remaining clusters
+            extra_centers = torch.randn(
+                self.num_clusters - effective_num_clusters,
+                features.shape[1],
+                device=self.device
+            ) * 0.1
+            cluster_centers = torch.cat([cluster_centers, extra_centers], dim=0)
         
         # K-means iterations
         max_iters = 300
@@ -212,8 +232,19 @@ class TEMIClusterer:
         for init_idx in range(n_init):
             # Random initialization for this run
             if init_idx > 0:
-                indices = torch.randperm(num_samples, device=self.device)[:self.num_clusters]
-                cluster_centers = features[indices].clone()
+                indices = torch.randperm(num_samples, device=self.device)[:effective_num_clusters]
+                cluster_centers_init = features[indices].clone()
+                
+                # Pad with random noise if needed
+                if effective_num_clusters < self.num_clusters:
+                    extra_centers = torch.randn(
+                        self.num_clusters - effective_num_clusters,
+                        features.shape[1],
+                        device=self.device
+                    ) * 0.1
+                    cluster_centers = torch.cat([cluster_centers_init, extra_centers], dim=0)
+                else:
+                    cluster_centers = cluster_centers_init
             
             for iter_idx in range(max_iters):
                 # Assign samples to nearest cluster (using cosine similarity)

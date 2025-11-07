@@ -8,6 +8,8 @@ This repository implements TEMI (Transformation-Equivariant Multi-Instance) clus
 
 **🏷️ Want to generate pseudo labels for your clusters? Check out [PSEUDO_LABELING_GUIDE.md](PSEUDO_LABELING_GUIDE.md)!**
 
+**🔬 Want to distill your dataset using pseudo labels? Check out [DATASET_DISTILLATION_GUIDE.md](DATASET_DISTILLATION_GUIDE.md)!**
+
 ## Table of Contents
 
 - [Overview](#overview)
@@ -33,12 +35,13 @@ This repository implements TEMI (Transformation-Equivariant Multi-Instance) clus
 
 ## Overview
 
-The pipeline consists of four main stages:
+The pipeline consists of five main stages:
 
 1. **Feature Extraction**: Extract visual features from dataset images using pre-trained vision models (DINOv2, DINOv3, or CLIP)
 2. **TEMI Clustering**: Train a clustering model using transformation equivariance and multi-instance learning principles
 3. **Evaluation**: Assess clustering quality using multiple metrics (accuracy, NMI, ARI)
 4. **Visualization & Pseudo Labeling** (optional): Generate t-SNE/UMAP plots to visualize cluster structures and map clusters to actual labels
+5. **Dataset Distillation** (optional): Create a small synthetic dataset that preserves the learning dynamics of the full dataset
 
 ## Features
 
@@ -46,6 +49,7 @@ The pipeline consists of four main stages:
 - **Multiple feature extractors**: Support for DINOv2, DINOv3, and CLIP models for powerful visual representations
 - **TEMI clustering algorithm**: Implementation following the paper specifications
 - **Pseudo label generation**: Map clusters to actual labels using k-nearest samples for interpretability and semi-supervised learning
+- **Dataset distillation**: Create synthetic datasets using trajectory matching ([arXiv:2406.18561](https://arxiv.org/html/2406.18561))
 - **Checkpoint system**: Resume training from any stage without re-running expensive computations
 - **Comprehensive evaluation**: Multiple metrics including accuracy, NMI, and ARI
 - **Cluster visualization**: Generate beautiful t-SNE and UMAP plots to visualize clustering results
@@ -53,6 +57,8 @@ The pipeline consists of four main stages:
 - **Support for multiple model variants**: Small, base, large, giant, and custom HuggingFace models
 - **Well-documented code**: Human-readable comments throughout
 - **Robust error handling**: Graceful degradation and informative error messages
+- **Type safety**: All operations use PyTorch tensors with proper device handling
+- **Vectorized operations**: Efficient batch processing throughout
 
 ## Requirements
 
@@ -289,6 +295,39 @@ python main.py \
 
 **For complete documentation, see [PSEUDO_LABELING_GUIDE.md](PSEUDO_LABELING_GUIDE.md)**
 
+### Dataset Distillation
+
+You can distill your dataset to create a small synthetic dataset that preserves the learning dynamics:
+
+```bash
+# Generate pseudo labels and distill the dataset
+python main.py \
+    --num_clusters 100 \
+    --generate_pseudo_labels \
+    --distill_dataset \
+    --images_per_class 10 \
+    --distill_epochs 100 \
+    --evaluate_distilled \
+    --save_features
+
+# Run standalone example
+python example_distillation.py \
+    --dataset cifar100 \
+    --model_type dinov2 \
+    --num_samples 500 \
+    --num_clusters 10 \
+    --images_per_class 5 \
+    --distill_epochs 10
+```
+
+**Benefits of Dataset Distillation:**
+- **50-100x compression**: Reduce dataset size by 98-99%
+- **Faster training**: Train models much faster on distilled data
+- **Performance retention**: 80-95% of original performance
+- **Memory efficient**: Lower memory requirements
+
+**For complete documentation, see [DATASET_DISTILLATION_GUIDE.md](DATASET_DISTILLATION_GUIDE.md)**
+
 ## Command Line Arguments
 
 ### Data Arguments
@@ -332,6 +371,14 @@ python main.py \
 - `--visualize_mapping`: Generate visualization of cluster-to-label mappings
 - `--max_clusters_viz`: Maximum number of clusters to visualize in mapping (default: 20)
 - `--samples_per_cluster`: Number of samples to show per cluster in visualization (default: 5)
+
+### Dataset Distillation Arguments
+- `--distill_dataset`: Perform dataset distillation using pseudo labels
+- `--images_per_class`: Number of synthetic images per class for distillation (default: 10)
+- `--distill_epochs`: Number of distillation epochs (default: 100)
+- `--distill_lr`: Learning rate for distilled image optimization (default: 0.1)
+- `--inner_epochs`: Number of inner training epochs per distillation step (default: 10)
+- `--evaluate_distilled`: Evaluate the quality of distilled data
 
 ### Output Arguments
 - `--results_dir`: Directory for saving results (default: ./results)

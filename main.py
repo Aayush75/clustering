@@ -34,6 +34,7 @@ from src.pseudo_labeling import (
     visualize_cluster_mapping,
     map_clusters_to_labels
 )
+from src.dataset_distillation import DatasetDistiller
 
 
 def parse_arguments():
@@ -122,6 +123,20 @@ def parse_arguments():
                         help='Maximum number of clusters to visualize in mapping')
     parser.add_argument('--samples_per_cluster', type=int, default=5,
                         help='Number of samples to show per cluster in mapping visualization')
+    
+    # Dataset distillation arguments
+    parser.add_argument('--distill_dataset', action='store_true',
+                        help='Perform dataset distillation using pseudo labels')
+    parser.add_argument('--images_per_class', type=int, default=10,
+                        help='Number of synthetic images per class for distillation')
+    parser.add_argument('--distill_epochs', type=int, default=100,
+                        help='Number of distillation epochs')
+    parser.add_argument('--distill_lr', type=float, default=0.1,
+                        help='Learning rate for distilled image optimization')
+    parser.add_argument('--inner_epochs', type=int, default=10,
+                        help='Number of inner training epochs per distillation step')
+    parser.add_argument('--evaluate_distilled', action='store_true',
+                        help='Evaluate the quality of distilled data')
     
     # Device arguments
     parser.add_argument('--device', type=str, default='cuda',
@@ -666,6 +681,70 @@ def main():
             args, clusterer, train_features, train_labels,
             test_features, test_labels, experiment_dir
         )
+    
+    # Step 5: Perform dataset distillation if requested
+    if args.distill_dataset:
+        print("\n" + "="*60)
+        print("Step 5: Dataset Distillation")
+        print("="*60)
+        
+        # Ensure we have pseudo labels
+        if not args.generate_pseudo_labels:
+            print("Generating pseudo labels for distillation...")
+            train_predictions = clusterer.predict(train_features)
+            train_pseudo_labels, train_cluster_to_label, train_k_nearest, train_confidence, train_cluster_confidence = generate_pseudo_labels(
+                features=train_features,
+                cluster_assignments=train_predictions,
+                true_labels=train_labels,
+                cluster_centers=clusterer.cluster_centers,
+                k=args.k_samples,
+                verbose=True,
+                return_confidence=True
+            )
+        else:
+            # Load previously generated pseudo labels
+            pseudo_labels_dir = experiment_dir / "pseudo_labels"
+            results_path = pseudo_labels_dir / f"pseudo_labels_k{args.k_samples}.json"
+            with open(results_path, 'r') as f:
+                pseudo_results = json.load(f)
+            train_pseudo_labels = torch.tensor(pseudo_results['train_pseudo_labels'], device=args.device)
+        
+        # Initialize distiller
+        feature_dim = train_features.shape[1]
+        distiller = DatasetDistiller(
+            feature_dim=feature_dim,
+            num_classes=args.num_clusters,
+            images_per_class=args.images_per_class,
+            device=args.device,
+            learning_rate=args.learning_rate,
+            distill_lr=args.distill_lr,
+            distill_epochs=args.distill_epochs,
+            inner_epochs=args.inner_epochs,
+            batch_size=args.batch_size
+        )
+        
+        # Perform distillation
+        synthesized_features, synthesized_labels = distiller.distill(
+            real_features=train_features,
+            pseudo_labels=train_pseudo_labels,
+            verbose=True
+        )
+        
+        # Save distilled data
+        distilled_dir = experiment_dir / "distilled_data"
+        distilled_dir.mkdir(exist_ok=True)
+        distilled_path = distilled_dir / "distilled_features.pt"
+        distiller.save_distilled_data(str(distilled_path))
+        
+        # Evaluate distilled data if requested
+        if args.evaluate_distilled:
+            distiller.evaluate_distilled_data(
+                real_features=train_features,
+                pseudo_labels=train_pseudo_labels,
+                test_features=test_features,
+                test_labels=test_labels if test_labels is not None else None,
+                num_trials=5
+            )
     
     print("\n" + "="*60)
     print("Clustering pipeline completed successfully!")
