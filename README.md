@@ -6,6 +6,8 @@ This repository implements TEMI (Transformation-Equivariant Multi-Instance) clus
 
 **📊 Want to use ImageNet? Check out [IMAGENET_USAGE.md](IMAGENET_USAGE.md) for the complete guide!**
 
+**🏷️ Want to generate pseudo labels for your clusters? Check out [PSEUDO_LABELING_GUIDE.md](PSEUDO_LABELING_GUIDE.md)!**
+
 ## Table of Contents
 
 - [Overview](#overview)
@@ -19,8 +21,10 @@ This repository implements TEMI (Transformation-Equivariant Multi-Instance) clus
   - [With Visualization](#with-visualization)
   - [Using Pre-extracted Features](#using-pre-extracted-features-avoid-re-running-experiments)
   - [Analyzing Existing Results](#analyzing-existing-results)
+  - [Generating Pseudo Labels](#generating-pseudo-labels)
 - [Command Line Arguments](#command-line-arguments)
 - [Cluster Visualization](#cluster-visualization)
+- [Pseudo Label Generation](#pseudo-label-generation)
 - [Algorithm Details](#algorithm-details)
 - [Evaluation Metrics](#evaluation-metrics)
 - [Output Files](#output-files)
@@ -29,21 +33,23 @@ This repository implements TEMI (Transformation-Equivariant Multi-Instance) clus
 
 ## Overview
 
-The pipeline consists of three main stages:
+The pipeline consists of four main stages:
 
 1. **Feature Extraction**: Extract visual features from dataset images using pre-trained vision models (DINOv2, DINOv3, or CLIP)
 2. **TEMI Clustering**: Train a clustering model using transformation equivariance and multi-instance learning principles
 3. **Evaluation**: Assess clustering quality using multiple metrics (accuracy, NMI, ARI)
-4. **Visualization** (optional): Generate t-SNE/UMAP plots to visualize cluster structures
+4. **Visualization & Pseudo Labeling** (optional): Generate t-SNE/UMAP plots to visualize cluster structures and map clusters to actual labels
 
 ## Features
 
 - **Multiple datasets**: Support for CIFAR100 and ImageNet-1K datasets
 - **Multiple feature extractors**: Support for DINOv2, DINOv3, and CLIP models for powerful visual representations
 - **TEMI clustering algorithm**: Implementation following the paper specifications
+- **Pseudo label generation**: Map clusters to actual labels using k-nearest samples for interpretability and semi-supervised learning
 - **Checkpoint system**: Resume training from any stage without re-running expensive computations
 - **Comprehensive evaluation**: Multiple metrics including accuracy, NMI, and ARI
 - **Cluster visualization**: Generate beautiful t-SNE and UMAP plots to visualize clustering results
+- **Cluster mapping visualization**: Visualize the most representative images from each cluster
 - **Support for multiple model variants**: Small, base, large, giant, and custom HuggingFace models
 - **Well-documented code**: Human-readable comments throughout
 - **Robust error handling**: Graceful degradation and informative error messages
@@ -69,19 +75,21 @@ Key dependencies:
 
 ```
 clustering-private/
-├── main.py                       # Main training script
-├── analyze_results.py            # Results analysis and visualization script
-├── requirements.txt              # Python dependencies
+├── main.py                        # Main training script
+├── analyze_results.py             # Results analysis and visualization script
+├── generate_pseudo_labels.py     # Standalone script for pseudo label generation
+├── requirements.txt               # Python dependencies
 ├── src/
 │   ├── __init__.py
-│   ├── data_loader.py           # CIFAR100 data loading and preprocessing
-│   ├── feature_extractor.py     # DINOv2/DINOv3 feature extraction
+│   ├── data_loader.py            # CIFAR100 & ImageNet data loading
+│   ├── feature_extractor.py      # DINOv2/DINOv3 feature extraction
 │   ├── clip_feature_extractor.py # CLIP feature extraction
-│   ├── temi_clustering.py       # TEMI clustering algorithm
-│   ├── evaluation.py            # Clustering evaluation metrics
-│   └── visualization.py         # Cluster visualization (t-SNE/UMAP)
-├── data/                         # CIFAR100 dataset (auto-downloaded)
-├── checkpoints/                 # Model checkpoints
+│   ├── temi_clustering.py        # TEMI clustering algorithm
+│   ├── evaluation.py             # Clustering evaluation metrics
+│   ├── visualization.py          # Cluster visualization (t-SNE/UMAP)
+│   └── pseudo_labeling.py        # Pseudo label generation and mapping
+├── data/                          # Dataset storage (auto-downloaded)
+├── checkpoints/                  # Model checkpoints
 └── results/                     # Experiment results and outputs
 ```
 
@@ -250,6 +258,37 @@ python analyze_results.py ./results/experiment_name --plot --viz_method umap
 
 **Note**: Visualization requires that the experiment was run with `--save_features` flag.
 
+### Generating Pseudo Labels
+
+You can generate pseudo labels for your clusters to map them to actual class labels. This is useful for understanding what each cluster represents and for semi-supervised learning applications.
+
+```bash
+# Generate pseudo labels during main run
+python main.py \
+    --generate_pseudo_labels \
+    --k_samples 10 \
+    --visualize_mapping \
+    --save_features
+
+# Generate pseudo labels from existing results
+python generate_pseudo_labels.py \
+    --experiment_dir ./results/experiment_name \
+    --k_samples 10 \
+    --visualize
+
+# Example: Full pipeline with pseudo labels and all visualizations
+python main.py \
+    --num_clusters 100 \
+    --num_epochs 100 \
+    --generate_pseudo_labels \
+    --k_samples 10 \
+    --visualize_mapping \
+    --plot_clusters \
+    --save_features
+```
+
+**For complete documentation, see [PSEUDO_LABELING_GUIDE.md](PSEUDO_LABELING_GUIDE.md)**
+
 ## Command Line Arguments
 
 ### Data Arguments
@@ -286,6 +325,13 @@ python analyze_results.py ./results/experiment_name --plot --viz_method umap
 - `--plot_clusters`: Generate cluster visualizations (t-SNE/UMAP plots)
 - `--viz_method`: Dimensionality reduction method (choices: tsne, umap; default: tsne)
 - `--show_plots`: Display plots interactively (in addition to saving them)
+
+### Pseudo Labeling Arguments
+- `--generate_pseudo_labels`: Generate pseudo labels by mapping clusters to actual labels
+- `--k_samples`: Number of nearest samples to cluster center for label assignment (default: 10)
+- `--visualize_mapping`: Generate visualization of cluster-to-label mappings
+- `--max_clusters_viz`: Maximum number of clusters to visualize in mapping (default: 20)
+- `--samples_per_cluster`: Number of samples to show per cluster in visualization (default: 5)
 
 ### Output Arguments
 - `--results_dir`: Directory for saving results (default: ./results)
@@ -407,6 +453,60 @@ python analyze_results.py ./results/experiment_name --plot --viz_method tsne
 
 **For detailed visualization documentation, see [VISUALIZATION_GUIDE.md](VISUALIZATION_GUIDE.md)**
 
+## Pseudo Label Generation
+
+After clustering, you can generate pseudo labels to map each cluster to an actual class label. This mapping is determined by examining the k nearest samples to each cluster center and using majority voting.
+
+### How It Works
+
+1. **Find Representative Samples**: For each cluster, identify the k samples closest to the cluster center
+2. **Majority Vote**: Assign the cluster the label that appears most frequently among these k samples
+3. **Apply Mapping**: All samples in a cluster get the cluster's pseudo label
+
+### Key Features
+
+- **Flexible k parameter**: Control how many samples determine the label (recommended: k=10 for CIFAR100, k=20 for ImageNet)
+- **Accuracy metrics**: Compare pseudo-label accuracy to true labels
+- **Visual verification**: Generate images showing representative samples from each cluster
+- **Per-cluster analysis**: See which clusters are pure vs. mixed
+
+### Usage Examples
+
+```bash
+# During main clustering run
+python main.py --generate_pseudo_labels --k_samples 10 --visualize_mapping
+
+# From existing results
+python generate_pseudo_labels.py \
+    --experiment_dir ./results/experiment_name \
+    --k_samples 10 \
+    --visualize
+```
+
+### Output
+
+The pseudo label generation creates a `pseudo_labels/` directory containing:
+
+1. **JSON Results** (`pseudo_labels_k{k}.json`):
+   - Pseudo labels for all samples
+   - Cluster-to-label mapping
+   - Indices of k nearest samples
+
+2. **Visualization** (`cluster_mapping_k{k}.png`):
+   - Grid showing representative images from each cluster
+   - True labels for each sample (green=match, red=mismatch)
+   - Cluster ID and assigned pseudo label
+
+### Interpreting Results
+
+- **High per-cluster accuracy**: Cluster represents a single semantic concept well
+- **Low per-cluster accuracy**: Cluster is impure (contains multiple classes)
+- **Empty clusters**: Normal - not all clusters will be used
+- **Green titles in viz**: Sample's true label matches the cluster's pseudo label
+- **Red titles in viz**: Mismatch indicating cluster impurity
+
+**For complete documentation, see [PSEUDO_LABELING_GUIDE.md](PSEUDO_LABELING_GUIDE.md)**
+
 ## Output Files
 
 Each experiment generates the following outputs in the results directory:
@@ -415,8 +515,9 @@ Each experiment generates the following outputs in the results directory:
 - `results.json`: Evaluation metrics for train and test sets
 - `predictions.npz`: Cluster assignments and ground truth labels
 - `final_checkpoint.pt`: Trained model checkpoint
-- `features/` (optional): Extracted DINOv2/DINOv3 features
+- `features/` (optional): Extracted DINOv2/DINOv3/CLIP features
 - `visualizations/` (optional): t-SNE/UMAP plots and cluster distribution charts
+- `pseudo_labels/` (optional): Pseudo labels, cluster-to-label mappings, and visualization
 
 ## Expected Results
 
