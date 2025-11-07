@@ -458,6 +458,7 @@ def print_cluster_mapping_summary(
             confidence_scores = torch.tensor(confidence_scores)
         valid_mask = pseudo_labels != -1
         if torch.any(valid_mask):
+            valid_mask = valid_mask.to(confidence_scores.device)
             avg_confidence = torch.mean(confidence_scores[valid_mask]).item()
             print(f"Average Sample Confidence: {avg_confidence:.4f}")
             print(f"Confidence Range: [{torch.min(confidence_scores[valid_mask]).item():.4f}, "
