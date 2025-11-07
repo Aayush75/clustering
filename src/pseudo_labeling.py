@@ -200,38 +200,46 @@ def apply_pseudo_labels(
     return pseudo_labels
 
 
-def compute_sample_confidence_scores(features, cluster_assignments, cluster_centers,
-                                     cluster_to_label, cluster_to_confidence):
+def compute_sample_confidence_scores(
+    features: torch.Tensor,
+    cluster_assignments: torch.Tensor,
+    cluster_centers: torch.Tensor,
+    cluster_to_label: Dict[int, int],
+    cluster_to_confidence: Dict[int, float]
+) -> torch.Tensor:
+
     device = features.device
 
-    # Normalize
+    cluster_assignments = cluster_assignments.to(device)
+    cluster_centers = cluster_centers.to(device)
+
     features_norm = torch.nn.functional.normalize(features, p=2, dim=1)
     centers_norm = torch.nn.functional.normalize(cluster_centers, p=2, dim=1)
 
-    # Identify invalid clusters (assigned -1)
-    valid_mask = cluster_assignments != -1
+    # shape: (num_clusters,)
+    cluster_conf_tensor = torch.zeros(len(cluster_centers), device=device)
+    for cid, conf in cluster_to_confidence.items():
+        cluster_conf_tensor[cid] = conf
 
-    # Vectorized center selection
-    chosen_centers = centers_norm[cluster_assignments.clamp(min=0)]
-    similarities = (features_norm * chosen_centers).sum(dim=1)  # cosine similarity
-    distance_conf = (similarities + 1) / 2.0                    # map to [0,1]
+    safe_assignments = cluster_assignments.clone()
+    safe_assignments[safe_assignments < 0] = 0
+
+    chosen_centers = centers_norm[safe_assignments]     # (N, D)
+
+    similarities = (features_norm * chosen_centers).sum(dim=1)  # (N,)
+    distance_conf = (similarities + 1) / 2.0                     # map [-1,1] → [0,1]
     distance_conf = torch.clamp(distance_conf, 0.0, 1.0)
 
-    # Convert cluster_to_confidence → tensor
-    cluster_conf_tensor = torch.tensor(
-        [cluster_to_confidence.get(int(i), 0.0) for i in range(len(cluster_centers))],
-        device=device, dtype=torch.float32
-    )
-    cluster_conf_vals = cluster_conf_tensor[cluster_assignments.clamp(min=0)]
+    cluster_conf_vals = cluster_conf_tensor[safe_assignments]
     cluster_conf_vals = torch.clamp(cluster_conf_vals, 0.0, 1.0)
 
-    # Geometric mean of confidence components
     confidence_scores = torch.sqrt(cluster_conf_vals * distance_conf)
 
-    # Mark invalid clusters as 0
-    confidence_scores[~valid_mask] = 0.0
+    invalid_mask = cluster_assignments == -1
+    confidence_scores[invalid_mask] = 0.0
 
     return confidence_scores
+
 
 
 def compute_pseudo_label_accuracy(
