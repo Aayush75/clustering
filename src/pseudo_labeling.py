@@ -421,88 +421,75 @@ def print_cluster_mapping_summary(
     cluster_to_confidence: Optional[Dict[int, float]] = None,
     confidence_scores: Optional[torch.Tensor] = None
 ) -> None:
-    """
-    Print a summary of the cluster-to-label mapping with confidence scores.
-    
-    Args:
-        cluster_to_label: Dictionary mapping cluster_id -> pseudo_label
-        cluster_assignments: Cluster assignments of shape (n_samples,)
-        true_labels: True labels of shape (n_samples,)
-        class_names: Optional list of class names for better readability
-        cluster_to_confidence: Optional dictionary mapping cluster_id -> confidence
-        confidence_scores: Optional sample-wise confidence scores
-    """
+
     print("\n" + "="*80)
     print("Cluster-to-Label Mapping Summary")
     print("="*80)
-    
-    # Ensure inputs are tensors
+
     if not isinstance(cluster_assignments, torch.Tensor):
         cluster_assignments = torch.tensor(cluster_assignments)
     if not isinstance(true_labels, torch.Tensor):
         true_labels = torch.tensor(true_labels)
-    
-    # Apply pseudo labels
-    pseudo_labels = apply_pseudo_labels(cluster_assignments, cluster_to_label)
-    
-    # Compute accuracy
+
+    device = cluster_assignments.device
+    true_labels = true_labels.to(device)
+
+    pseudo_labels = apply_pseudo_labels(cluster_assignments, cluster_to_label).to(device)
+
     accuracy = compute_pseudo_label_accuracy(pseudo_labels, true_labels)
-    
+
     print(f"\nOverall Pseudo-Label Accuracy: {accuracy:.4f} ({accuracy*100:.2f}%)")
     print(f"\nTotal Clusters: {len(cluster_to_label)}")
     print(f"Empty Clusters: {sum(1 for v in cluster_to_label.values() if v == -1)}")
-    
-    # Print confidence statistics if available
+
     if confidence_scores is not None:
         if not isinstance(confidence_scores, torch.Tensor):
             confidence_scores = torch.tensor(confidence_scores)
-        valid_mask = pseudo_labels != -1
+        confidence_scores = confidence_scores.to(device)
+
+        valid_mask = (pseudo_labels != -1).to(device)
         if torch.any(valid_mask):
-            valid_mask = valid_mask.to(confidence_scores.device)
-            avg_confidence = torch.mean(confidence_scores[valid_mask]).item()
+            avg_confidence = confidence_scores[valid_mask].mean().item()
+            cmin = confidence_scores[valid_mask].min().item()
+            cmax = confidence_scores[valid_mask].max().item()
             print(f"Average Sample Confidence: {avg_confidence:.4f}")
-            print(f"Confidence Range: [{torch.min(confidence_scores[valid_mask]).item():.4f}, "
-                  f"{torch.max(confidence_scores[valid_mask]).item():.4f}]")
-    
-    # Show per-cluster mapping
+            print(f"Confidence Range: [{cmin:.4f}, {cmax:.4f}]")
+
     print("\nCluster Mappings:")
     print("-" * 95)
     if cluster_to_confidence is not None:
-        print(f"{'Cluster ID':<12} {'→':<3} {'Pseudo Label':<20} {'Cluster Size':<15} "
-              f"{'Accuracy':<12} {'Confidence':<10}")
+        print(f"{'Cluster ID':<12} {'→':<3} {'Pseudo Label':<20} {'Cluster Size':<15} {'Accuracy':<12} {'Confidence':<10}")
     else:
         print(f"{'Cluster ID':<12} {'→':<3} {'Pseudo Label':<20} {'Cluster Size':<15} {'Accuracy':<10}")
     print("-" * 95)
-    
+
     for cluster_id in sorted(cluster_to_label.keys()):
         pseudo_label = cluster_to_label[cluster_id]
-        
-        # Get samples in this cluster
-        cluster_mask = cluster_assignments == cluster_id
-        cluster_size = torch.sum(cluster_mask).item()
-        
+
+        cluster_mask = (cluster_assignments == cluster_id).to(device)
+        cluster_size = cluster_mask.sum().item()
+
         if cluster_size == 0:
             continue
-        
-        # Compute per-cluster accuracy
-        cluster_true_labels = true_labels[cluster_mask]
-        cluster_accuracy = (cluster_true_labels == torch.tensor(pseudo_label, device=cluster_true_labels.device)).float().mean()
 
-        
-        # Format label
+        if pseudo_label == -1:
+            cluster_accuracy = 0.0
+        else:
+            target_label = torch.tensor(pseudo_label, device=device)
+            cluster_true_labels = true_labels[cluster_mask]
+            cluster_accuracy = (cluster_true_labels == target_label).float().mean().item()
+
         if class_names and pseudo_label != -1:
             label_str = f"{pseudo_label} ({class_names[pseudo_label]})"
         else:
             label_str = str(pseudo_label)
-        
-        # Print with or without confidence
+
         if cluster_to_confidence is not None:
             cluster_conf = cluster_to_confidence.get(cluster_id, 0.0)
-            print(f"{cluster_id:<12} {'→':<3} {label_str:<20} {cluster_size:<15} "
-                  f"{cluster_accuracy:<12.4f} {cluster_conf:<10.4f}")
+            print(f"{cluster_id:<12} {'→':<3} {label_str:<20} {cluster_size:<15} {cluster_accuracy:<12.4f} {cluster_conf:<10.4f}")
         else:
             print(f"{cluster_id:<12} {'→':<3} {label_str:<20} {cluster_size:<15} {cluster_accuracy:.4f}")
-    
+
     print("-" * 95)
     print()
 
