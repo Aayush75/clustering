@@ -51,8 +51,8 @@ def parse_arguments():
     
     # Data arguments
     parser.add_argument('--dataset', type=str, default='cifar100',
-                        choices=['cifar100', 'imagenet'],
-                        help='Dataset to use (cifar100 or imagenet)')
+                        choices=['cifar10', 'cifar100', 'imagenet', 'tiny-imagenet'],
+                        help='Dataset to use (cifar10, cifar100, imagenet, or tiny-imagenet)')
     parser.add_argument('--data_root', type=str, default='./data',
                         help='Root directory for dataset storage')
     parser.add_argument('--batch_size', type=int, default=256,
@@ -164,10 +164,14 @@ def setup_directories(args):
     
     # Set default number of clusters based on dataset if not specified
     if args.num_clusters is None:
-        if args.dataset.lower() == 'cifar100':
+        if args.dataset.lower() == 'cifar10':
+            args.num_clusters = 10
+        elif args.dataset.lower() == 'cifar100':
             args.num_clusters = 100
         elif args.dataset.lower() == 'imagenet':
             args.num_clusters = 1000
+        elif args.dataset.lower() == 'tiny-imagenet':
+            args.num_clusters = 200
     
     # Generate experiment name if not provided
     if args.experiment_name is None:
@@ -510,7 +514,14 @@ def generate_and_save_pseudo_labels(
     
     # Get class names if available
     class_names = None
-    if args.dataset.lower() == 'cifar100':
+    if args.dataset.lower() == 'cifar10':
+        try:
+            from torchvision.datasets import CIFAR10
+            cifar = CIFAR10(root=args.data_root, train=True, download=False)
+            class_names = cifar.classes
+        except Exception as e:
+            print(f"Could not load class names: {e}")
+    elif args.dataset.lower() == 'cifar100':
         try:
             from torchvision.datasets import CIFAR100
             cifar = CIFAR100(root=args.data_root, train=True, download=False)
@@ -520,6 +531,9 @@ def generate_and_save_pseudo_labels(
     elif args.dataset.lower() == 'imagenet':
         # ImageNet has 1000 classes
         class_names = [f"Class_{i}" for i in range(1000)]
+    elif args.dataset.lower() == 'tiny-imagenet':
+        # Tiny ImageNet has 200 classes
+        class_names = [f"Class_{i}" for i in range(200)]
     
     # Generate pseudo labels for training set
     print("\n>>> Training Set <<<")

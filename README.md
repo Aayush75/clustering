@@ -1,6 +1,6 @@
-# TEMI Deep Clustering on CIFAR100 and ImageNet
+# TEMI Deep Clustering on CIFAR10, CIFAR100, Tiny ImageNet, and ImageNet
 
-This repository implements TEMI (Transformation-Equivariant Multi-Instance) clustering on the CIFAR100 and ImageNet datasets using DINOv2/DINOv3 or CLIP features. The implementation follows the paper "Self-Supervised Clustering with Deep Learning" (arXiv:2303.17896).
+This repository implements TEMI (Transformation-Equivariant Multi-Instance) clustering on multiple datasets (CIFAR10, CIFAR100, Tiny ImageNet, and ImageNet) using DINOv2/DINOv3 or CLIP features. The implementation follows the paper "Self-Supervised Clustering with Deep Learning" (arXiv:2303.17896).
 
 **🚀 New to this project? Check out [QUICKSTART.md](QUICKSTART.md) to get started in minutes!**
 
@@ -45,7 +45,7 @@ The pipeline consists of five main stages:
 
 ## Features
 
-- **Multiple datasets**: Support for CIFAR100 and ImageNet-1K datasets
+- **Multiple datasets**: Support for CIFAR10, CIFAR100, Tiny ImageNet, and ImageNet-1K datasets
 - **Multiple feature extractors**: Support for DINOv2, DINOv3, and CLIP models for powerful visual representations
 - **TEMI clustering algorithm**: Implementation following the paper specifications
 - **Pseudo label generation**: Map clusters to actual labels using k-nearest samples for interpretability and semi-supervised learning
@@ -87,7 +87,7 @@ clustering-private/
 ├── requirements.txt               # Python dependencies
 ├── src/
 │   ├── __init__.py
-│   ├── data_loader.py            # CIFAR100 & ImageNet data loading
+│   ├── data_loader.py            # CIFAR10, CIFAR100, Tiny ImageNet & ImageNet data loading
 │   ├── feature_extractor.py      # DINOv2/DINOv3 feature extraction
 │   ├── clip_feature_extractor.py # CLIP feature extraction
 │   ├── temi_clustering.py        # TEMI clustering algorithm
@@ -115,6 +115,18 @@ Run clustering with default settings (k=100 clusters on CIFAR100 using DINOv2):
 
 ```bash
 python main.py
+```
+
+Run clustering on CIFAR10 (k=10 clusters using DINOv2):
+
+```bash
+python main.py --dataset cifar10
+```
+
+Run clustering on Tiny ImageNet (k=200 clusters using DINOv2):
+
+```bash
+python main.py --dataset tiny-imagenet
 ```
 
 Run clustering on ImageNet (k=1000 clusters using DINOv2):
@@ -331,7 +343,11 @@ python example_distillation.py \
 ## Command Line Arguments
 
 ### Data Arguments
-- `--dataset`: Dataset to use (choices: cifar100, imagenet; default: cifar100)
+- `--dataset`: Dataset to use (choices: cifar10, cifar100, imagenet, tiny-imagenet; default: cifar100)
+  - **cifar10**: 10 classes, 32x32 images, 50K train / 10K test
+  - **cifar100**: 100 classes, 32x32 images, 50K train / 10K test
+  - **tiny-imagenet**: 200 classes, 64x64 images, 100K train / 10K test (requires internet)
+  - **imagenet**: 1000 classes, 128x128 images, 1.2M train / 50K test (requires internet)
 - `--data_root`: Root directory for dataset storage (default: ./data)
 - `--batch_size`: Batch size for data loading (default: 256)
 - `--num_workers`: Number of data loading workers (default: 4)
@@ -606,10 +622,52 @@ To handle large datasets efficiently:
 This implementation stays faithful to the TEMI paper with the following considerations:
 
 1. **Feature Extractor**: Uses DINOv2 instead of training from scratch (as recommended for better features)
-2. **Dataset**: Applied to CIFAR100 instead of ImageNet (more practical for experimentation)
+2. **Dataset**: Applied to multiple datasets (CIFAR10, CIFAR100, Tiny ImageNet, ImageNet) for flexibility
 3. **Augmentations**: Simplified augmentation strategy suitable for CIFAR100's small images
 
 All core algorithmic components follow the paper specifications exactly.
+
+## Dataset Details
+
+The framework supports four datasets with different characteristics:
+
+### CIFAR10
+- **Classes**: 10 (airplane, automobile, bird, cat, deer, dog, frog, horse, ship, truck)
+- **Image Size**: 32x32 (resized to 224x224 for models)
+- **Train Samples**: 50,000
+- **Test Samples**: 10,000
+- **Default Clusters**: 10
+- **Source**: torchvision.datasets.CIFAR10
+- **Download**: Automatic (or use pre-downloaded at ./data/cifar-10-batches-py/)
+
+### CIFAR100
+- **Classes**: 100 fine-grained classes
+- **Image Size**: 32x32 (resized to 224x224 for models)
+- **Train Samples**: 50,000
+- **Test Samples**: 10,000
+- **Default Clusters**: 100
+- **Source**: torchvision.datasets.CIFAR100
+- **Download**: Automatic
+
+### Tiny ImageNet
+- **Classes**: 200 (subset of ImageNet classes)
+- **Image Size**: 64x64 (resized to 224x224 for models)
+- **Train Samples**: 100,000
+- **Test Samples**: 10,000
+- **Default Clusters**: 200
+- **Source**: HuggingFace (zh-plus/tiny-imagenet)
+- **Download**: Requires internet access to HuggingFace Hub
+
+### ImageNet-1K
+- **Classes**: 1000 (full ImageNet classification)
+- **Image Size**: 128x128 (resized to 224x224 for models)
+- **Train Samples**: 1,281,167
+- **Test Samples**: 50,000
+- **Default Clusters**: 1000
+- **Source**: HuggingFace (benjamin-paine/imagenet-1k-128x128)
+- **Download**: Requires internet access to HuggingFace Hub
+
+All datasets use ImageNet normalization (mean=[0.485, 0.456, 0.406], std=[0.229, 0.224, 0.225]) for compatibility with DINOv2 and CLIP models.
 
 ## Troubleshooting
 
