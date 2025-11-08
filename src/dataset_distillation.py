@@ -1,10 +1,7 @@
 """
 Dataset distillation module using pseudo labels from clustering.
 
-This module implements supervised dataset distillation as described in
-"Dataset Distillation by Matching Training Trajectories" (arXiv:2406.18561).
-The key idea is to synthesize a small set of images that, when trained on,
-produces similar model behavior as training on the full dataset.
+Fixed implementation with proper gradient flow - NO in-place operations.
 """
 
 import torch
@@ -17,9 +14,7 @@ import warnings
 
 
 class SimpleClassifier(nn.Module):
-    """
-    Simple classification model for dataset distillation.
-    """
+    """Simple classification model for dataset distillation."""
     
     def __init__(self, input_dim: int, num_classes: int, hidden_dims: List[int] = None):
         super(SimpleClassifier, self).__init__()
@@ -58,13 +53,9 @@ class SimpleClassifier(nn.Module):
 
 class DatasetDistiller:
     """
-    Dataset distillation using trajectory matching with proper gradient flow.
+    Dataset distillation using trajectory matching.
     
-    Key fixes:
-    1. Maintains gradient flow through synthetic data updates
-    2. Uses expert trajectories (computed once per outer loop)
-    3. Proper batch-based training
-    4. Normalized trajectory distance
+    Key fix: Completely avoids in-place operations that break autograd.
     """
     
     def __init__(
@@ -78,7 +69,7 @@ class DatasetDistiller:
         distill_epochs: int = 100,
         inner_epochs: int = 10,
         batch_size: int = 256,
-        expert_epochs: int = 50  # New: separate epoch count for expert
+        expert_epochs: int = 50
     ):
         self.device = torch.device(device if torch.cuda.is_available() else "cpu")
         if device == "cuda" and not torch.cuda.is_available():
@@ -96,11 +87,8 @@ class DatasetDistiller:
         self.expert_epochs = expert_epochs
         self.batch_size = batch_size
         
-        # Synthesized features (learnable parameters)
         self.synthesized_features = None
         self.synthesized_labels = None
-        
-        # Expert trajectory (computed once)
         self.expert_trajectory = None
         
         print(f"Dataset distiller initialized on {self.device}")
@@ -113,9 +101,7 @@ class DatasetDistiller:
         real_features: torch.Tensor,
         pseudo_labels: torch.Tensor
     ):
-        """
-        Initialize synthesized features by sampling from real features.
-        """
+        """Initialize synthesized features by sampling from real features."""
         print("Initializing synthesized features...")
         
         real_features = real_features.to(self.device)
@@ -144,7 +130,6 @@ class DatasetDistiller:
                 indices = torch.randperm(len(class_features), device=self.device)[:self.images_per_class]
                 init_features = class_features[indices].clone()
             
-            # Smaller noise for better initialization
             init_features += torch.randn_like(init_features) * 0.001
             
             synthesized_list.append(init_features)
@@ -171,12 +156,11 @@ class DatasetDistiller:
         self,
         real_features: torch.Tensor,
         pseudo_labels: torch.Tensor
-    ) -> List[Dict[str, torch.Tensor]]:
+    ) -> List[torch.Tensor]:
         """
         Compute expert trajectory on real data (done once).
         
-        Returns:
-            List of parameter states at each epoch
+        Returns flat parameter tensors at each epoch.
         """
         print("Computing expert trajectory on real data...")
         
@@ -207,10 +191,9 @@ class DatasetDistiller:
                 loss.backward()
                 optimizer.step()
             
-            # Save parameter state (detached)
-            param_dict = {name: param.data.clone().detach() 
-                         for name, param in model.named_parameters()}
-            trajectory.append(param_dict)
+            # Save flattened parameters (detached)
+            flat_params = torch.cat([p.data.flatten() for p in model.parameters()])
+            trajectory.append(flat_params.clone())
             
             if (epoch + 1) % 10 == 0:
                 print(f"  Expert epoch {epoch+1}/{self.expert_epochs}")
@@ -220,89 +203,110 @@ class DatasetDistiller:
     
     def train_student_with_gradients(
         self,
-        model: nn.Module,
         synthetic_features: torch.Tensor,
         synthetic_labels: torch.Tensor,
         epochs: int
-    ) -> List[Dict[str, torch.Tensor]]:
+    ) -> List[torch.Tensor]:
         """
         Train student model on synthetic data while maintaining gradient flow.
         
-        This is the KEY fix - we keep gradients flowing through the process.
+        KEY FIX: Uses functional programming approach - no in-place ops!
+        
+        Returns:
+            List of flat parameter tensors at each step
         """
+        # Create a fresh student model
+        student_model = self.create_model()
         criterion = nn.CrossEntropyLoss()
+        
+        # Helper to get flat parameters
+        def get_flat_params(model):
+            return torch.cat([p.flatten() for p in model.parameters()])
+        
+        # Helper to unflatten parameters
+        def unflatten_params(flat_params, shapes):
+            params = []
+            offset = 0
+            for shape in shapes:
+                numel = torch.prod(torch.tensor(shape)).item()
+                params.append(flat_params[offset:offset+numel].view(shape))
+                offset += numel
+            return params
+        
+        # Get parameter shapes
+        param_shapes = [p.shape for p in student_model.parameters()]
+        
+        # Initialize with current model parameters (with gradient tracking)
+        current_params = [p.clone() for p in student_model.parameters()]
+        
         trajectory = []
         
-        # Get initial parameters
-        params = {name: param for name, param in model.named_parameters()}
-        
-        model.train()
         for epoch in range(epochs):
-            # Forward pass with gradient tracking
-            outputs = model(synthetic_features)
+            # Reconstruct model with current parameters
+            # This creates a NEW computation graph each time
+            idx = 0
+            for param in student_model.parameters():
+                param.data = current_params[idx].data
+                idx += 1
+            
+            # Forward pass
+            outputs = student_model(synthetic_features)
             loss = criterion(outputs, synthetic_labels)
             
             # Compute gradients w.r.t. model parameters
             grads = torch.autograd.grad(
                 loss,
-                params.values(),
-                create_graph=True,  # ← CRITICAL: Keep gradient graph!
-                retain_graph=True
+                student_model.parameters(),
+                create_graph=True,
+                retain_graph=False  # Don't need to retain between epochs
             )
             
-            # Manual SGD update (WITHOUT detaching!)
-            new_params = {}
-            for (name, param), grad in zip(params.items(), grads):
-                # This maintains the computational graph
-                new_params[name] = param - self.learning_rate * grad
+            # SGD update (fully differentiable, no in-place ops!)
+            new_params = []
+            for param, grad in zip(current_params, grads):
+                # Create NEW tensor (not in-place!)
+                new_param = param - self.learning_rate * grad
+                new_params.append(new_param)
             
-            # Update model parameters (this is differentiable!)
-            with torch.no_grad():
-                for name, param in model.named_parameters():
-                    param.copy_(new_params[name].data)
+            current_params = new_params
             
-            # Record trajectory (keep gradients for backprop)
-            trajectory.append(new_params)
+            # Record trajectory as flat tensor
+            flat_params = torch.cat([p.flatten() for p in current_params])
+            trajectory.append(flat_params)
         
         return trajectory
     
     def compute_trajectory_distance(
         self,
-        expert_trajectory: List[Dict[str, torch.Tensor]],
-        student_trajectory: List[Dict[str, torch.Tensor]]
+        expert_trajectory: List[torch.Tensor],
+        student_trajectory: List[torch.Tensor]
     ) -> torch.Tensor:
         """
         Compute normalized distance between expert and student trajectories.
+        
+        Both trajectories are now lists of flat parameter tensors.
         """
         distances = []
         
-        # Sample epochs (e.g., every 5 epochs) for efficiency
-        sample_epochs = list(range(0, len(expert_trajectory), 5))
-        if len(expert_trajectory) - 1 not in sample_epochs:
-            sample_epochs.append(len(expert_trajectory) - 1)
+        # Sample epochs for efficiency (every 5 epochs + last)
+        sample_epochs = list(range(0, min(len(expert_trajectory), len(student_trajectory)), 5))
+        last_epoch = min(len(expert_trajectory), len(student_trajectory)) - 1
+        if last_epoch not in sample_epochs and last_epoch >= 0:
+            sample_epochs.append(last_epoch)
         
         for t in sample_epochs:
-            if t >= len(student_trajectory):
-                break
-                
-            expert_params = expert_trajectory[t]
-            student_params = student_trajectory[t]
+            expert_flat = expert_trajectory[t].detach()
+            student_flat = student_trajectory[t]
             
-            # Compute parameter-wise distance
-            for name in expert_params.keys():
-                if name in student_params:
-                    expert_p = expert_params[name].detach()
-                    student_p = student_params[name]
-                    
-                    # Normalized L2 distance
-                    diff = student_p - expert_p
-                    dist = torch.sum(diff ** 2) / expert_p.numel()
-                    distances.append(dist)
+            # Normalized L2 distance
+            diff = student_flat - expert_flat
+            dist = torch.sum(diff ** 2) / len(diff)
+            distances.append(dist)
         
-        # Average distance across all parameters and timesteps
-        total_distance = torch.stack(distances).mean()
+        if len(distances) == 0:
+            return torch.tensor(0.0, device=self.device, requires_grad=True)
         
-        return total_distance
+        return torch.stack(distances).mean()
     
     def distill(
         self,
@@ -312,12 +316,6 @@ class DatasetDistiller:
     ) -> Tuple[torch.Tensor, torch.Tensor]:
         """
         Perform dataset distillation by matching training trajectories.
-        
-        Main fixes:
-        1. Expert trajectory computed once
-        2. Student training maintains gradient flow
-        3. Proper distance normalization
-        4. Batch-based synthetic data training
         """
         print("\n" + "="*80)
         print("Dataset Distillation with Trajectory Matching")
@@ -341,12 +339,8 @@ class DatasetDistiller:
         print(f"Optimizing {len(self.synthesized_features)} synthetic samples...")
         
         for epoch in tqdm(range(self.distill_epochs), desc="Distillation"):
-            # Create student model
-            student_model = self.create_model()
-            
             # Train student on synthetic data (maintains gradients!)
             student_trajectory = self.train_student_with_gradients(
-                student_model,
                 self.synthesized_features,
                 self.synthesized_labels,
                 self.inner_epochs
@@ -368,17 +362,18 @@ class DatasetDistiller:
             feature_optimizer.step()
             
             # Track best result
-            if distance.item() < best_distance:
-                best_distance = distance.item()
+            dist_val = distance.item()
+            if dist_val < best_distance:
+                best_distance = dist_val
                 best_features = self.synthesized_features.data.clone()
             
             # Compute improvement
-            improvement = ((prev_distance - distance.item()) / prev_distance * 100) if epoch > 0 else 0.0
-            prev_distance = distance.item()
+            improvement = ((prev_distance - dist_val) / prev_distance * 100) if epoch > 0 else 0.0
+            prev_distance = dist_val
             
             if verbose and (epoch + 1) % 10 == 0:
                 print(f"\nEpoch {epoch+1}/{self.distill_epochs}")
-                print(f"  Distance: {distance.item():.6f}")
+                print(f"  Distance: {dist_val:.6f}")
                 print(f"  Best: {best_distance:.6f}")
                 print(f"  Improvement: {improvement:+.2f}%")
         
@@ -387,9 +382,7 @@ class DatasetDistiller:
             self.synthesized_features = best_features.requires_grad_()
         
         print(f"\n{'='*80}")
-        print(f"Distillation complete!")
-        print(f"  Best distance: {best_distance:.6f}")
-        print(f"  Total improvement: {((self.expert_trajectory[0][list(self.expert_trajectory[0].keys())[0]].norm().item() - best_distance) / self.expert_trajectory[0][list(self.expert_trajectory[0].keys())[0]].norm().item() * 100):.1f}%")
+        print(f"Distillation complete! Best distance: {best_distance:.6f}")
         print(f"{'='*80}\n")
         
         return self.synthesized_features.detach(), self.synthesized_labels
@@ -402,9 +395,7 @@ class DatasetDistiller:
         test_labels: Optional[torch.Tensor] = None,
         num_trials: int = 5
     ) -> Dict[str, float]:
-        """
-        Evaluate the quality of distilled data.
-        """
+        """Evaluate the quality of distilled data."""
         print("\n" + "="*80)
         print("Evaluating Distilled Data")
         print("="*80)
