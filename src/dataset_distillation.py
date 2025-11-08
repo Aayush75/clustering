@@ -374,17 +374,36 @@ class DatasetDistiller:
         test_features: Optional[torch.Tensor] = None,
         test_labels: Optional[torch.Tensor] = None,
         num_trials: int = 5,
-        train_epochs: int = 50
+        train_epochs: int = 50,
+        images_per_class_eval: Optional[int] = None,
+        labeled_data_percentage: float = 1.0
     ) -> Dict[str, float]:
         """
         Evaluate distilled data by training models on distilled vs real data.
-        Returns averaged metrics.
+        
+        Args:
+            real_features: Real feature tensor (N, feature_dim)
+            pseudo_labels: Pseudo labels for real features (N,)
+            test_features: Optional test features
+            test_labels: Optional test labels
+            num_trials: Number of evaluation trials
+            train_epochs: Training epochs per trial
+            images_per_class_eval: If provided, use only this many distilled images per class for evaluation
+            labeled_data_percentage: Percentage of labeled data to use (0.0-1.0), simulates semi-supervised learning
+        
+        Returns:
+            Dictionary with evaluation metrics
         """
+        # Ensure all tensors are on the correct device
         real_features = real_features.to(self.device)
         pseudo_labels = pseudo_labels.to(self.device)
         if test_features is not None:
             test_features = test_features.to(self.device)
             test_labels = test_labels.to(self.device)
+
+        # Validate percentage
+        if not 0.0 < labeled_data_percentage <= 1.0:
+            raise ValueError(f"labeled_data_percentage must be in (0, 1], got {labeled_data_percentage}")
 
         results = {
             'distilled_train_acc': [],
@@ -393,6 +412,43 @@ class DatasetDistiller:
             'real_test_acc': []
         }
 
+        # Select subset of distilled data if images_per_class_eval is specified
+        if images_per_class_eval is not None and images_per_class_eval < self.images_per_class:
+            # Select images_per_class_eval samples per class
+            eval_synth_features_list = []
+            eval_synth_labels_list = []
+            for class_id in range(self.num_classes):
+                class_mask = self.synthesized_labels == class_id
+                class_indices = torch.where(class_mask)[0]
+                if len(class_indices) > 0:
+                    # Take first images_per_class_eval samples
+                    select_count = min(images_per_class_eval, len(class_indices))
+                    selected_indices = class_indices[:select_count]
+                    eval_synth_features_list.append(self.synthesized_features[selected_indices])
+                    eval_synth_labels_list.append(self.synthesized_labels[selected_indices])
+            
+            if len(eval_synth_features_list) > 0:
+                eval_synth_features = torch.cat(eval_synth_features_list, dim=0).to(self.device)
+                eval_synth_labels = torch.cat(eval_synth_labels_list, dim=0).to(self.device)
+            else:
+                eval_synth_features = self.synthesized_features.to(self.device)
+                eval_synth_labels = self.synthesized_labels.to(self.device)
+        else:
+            eval_synth_features = self.synthesized_features.to(self.device)
+            eval_synth_labels = self.synthesized_labels.to(self.device)
+
+        # Select subset of real data based on labeled_data_percentage
+        if labeled_data_percentage < 1.0:
+            num_labeled = int(len(real_features) * labeled_data_percentage)
+            # Randomly sample indices
+            perm = torch.randperm(len(real_features), device=self.device)
+            labeled_indices = perm[:num_labeled]
+            real_features_train = real_features[labeled_indices]
+            pseudo_labels_train = pseudo_labels[labeled_indices]
+        else:
+            real_features_train = real_features
+            pseudo_labels_train = pseudo_labels
+
         for trial in range(num_trials):
             # train on distilled
             distilled_model = self.create_model()
@@ -400,8 +456,8 @@ class DatasetDistiller:
             crit = nn.CrossEntropyLoss()
             distilled_model.train()
             # small dataset: synthesized_features, synthesized_labels
-            synth_ds = TensorDataset(self.synthesized_features.detach(), self.synthesized_labels)
-            synth_loader = DataLoader(synth_ds, batch_size=min(256, len(self.synthesized_features)), shuffle=True)
+            synth_ds = TensorDataset(eval_synth_features.detach(), eval_synth_labels)
+            synth_loader = DataLoader(synth_ds, batch_size=min(256, len(eval_synth_features)), shuffle=True)
             for ep in range(train_epochs):
                 for xb, yb in synth_loader:
                     xb = xb.to(self.device); yb = yb.to(self.device)
@@ -420,7 +476,7 @@ class DatasetDistiller:
             # train on real data (baseline)
             real_model = self.create_model()
             opt_real = torch.optim.SGD(real_model.parameters(), lr=self.learning_rate, momentum=0.9)
-            real_ds = TensorDataset(real_features, pseudo_labels)
+            real_ds = TensorDataset(real_features_train, pseudo_labels_train)
             real_loader = DataLoader(real_ds, batch_size=self.batch_size, shuffle=True)
             real_model.train()
             for ep in range(train_epochs):
@@ -443,7 +499,11 @@ class DatasetDistiller:
             'distilled_train_acc': float(torch.tensor(results['distilled_train_acc']).mean()),
             'distilled_train_std': float(torch.tensor(results['distilled_train_acc']).std()),
             'real_train_acc': float(torch.tensor(results['real_train_acc']).mean()),
-            'real_train_std': float(torch.tensor(results['real_train_acc']).std())
+            'real_train_std': float(torch.tensor(results['real_train_acc']).std()),
+            'images_per_class_eval': images_per_class_eval if images_per_class_eval is not None else self.images_per_class,
+            'labeled_data_percentage': labeled_data_percentage,
+            'eval_synth_size': len(eval_synth_features),
+            'real_data_size': len(real_features_train)
         }
         if test_features is not None:
             summary.update({
@@ -453,7 +513,8 @@ class DatasetDistiller:
                 'real_test_std': float(torch.tensor(results['real_test_acc']).std()),
             })
             summary['performance_ratio'] = summary['distilled_test_acc'] / max(1e-8, summary['real_test_acc'])
-            summary['compression_ratio'] = (len(self.synthesized_features) / len(real_features))
+        
+        summary['compression_ratio'] = len(eval_synth_features) / len(real_features)
 
         return summary
 

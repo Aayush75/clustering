@@ -192,7 +192,7 @@ def main():
     output_dir.mkdir(parents=True, exist_ok=True)
     
     distilled_path = output_dir / 'distilled_features.pt'
-    distiller.save_distilled_data(str(distilled_path))
+    distiller.save_distilled(str(distilled_path))
     
     print("\n" + "="*80)
     print("EXAMPLE COMPLETED SUCCESSFULLY!")
