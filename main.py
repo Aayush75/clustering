@@ -137,6 +137,9 @@ def parse_arguments():
                         help='Number of inner training epochs per distillation step')
     parser.add_argument('--evaluate_distilled', action='store_true',
                         help='Evaluate the quality of distilled data')
+    parser.add_argument('--selection_strategy', type=str, default='random',
+                        choices=['random', 'margin'],
+                        help='Strategy for initializing synthetic data (default: random).')
     
     # Device arguments
     parser.add_argument('--device', type=str, default='cuda',
@@ -720,7 +723,8 @@ def main():
             distill_lr=args.distill_lr,
             distill_epochs=args.distill_epochs,
             inner_epochs=args.inner_epochs,
-            batch_size=args.batch_size
+            batch_size=args.batch_size,
+            selection_strategy=args.selection_strategy
         )
         
         # Perform distillation
