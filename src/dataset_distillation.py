@@ -1,63 +1,75 @@
 """
-Dataset distillation module using pseudo labels from clustering.
+Dataset distillation (SelMatch-style + MTT) implementation in feature space.
 
-Fixed implementation with proper gradient flow - NO in-place operations.
+This implementation contains:
+- selection-based initialization (margin-based "difficulty" selector)
+- partial updates (freeze fraction / schedule)
+- short-unroll trajectory matching (differentiable SGD inner loop)
+- careful BN handling (default: LayerNorm to avoid running-stat issues)
+- evaluation routines (train on distilled vs real, test on true labels)
+
+Usage: import DatasetDistiller and run distill(...) and evaluate_distilled_data(...)
+
+Notes:
+- This implementation operates in feature-space (pre-extracted features + pseudo labels).
+- It aims to be faithful to the high-level SelMatch / MTT ideas while remaining self-contained and practical.
 """
 
+from typing import Optional, Tuple, List, Dict
 import torch
 import torch.nn as nn
 import torch.nn.functional as F
-from torch.utils.data import Dataset, DataLoader, TensorDataset
-from typing import Optional, Tuple, Dict, List
+from torch.utils.data import TensorDataset, DataLoader
 from tqdm import tqdm
-import warnings
+import math
+import copy
+import random
 
 
+# ----------------------------- Utility Models ---------------------------------
 class SimpleClassifier(nn.Module):
-    """Simple classification model for dataset distillation."""
-    
-    def __init__(self, input_dim: int, num_classes: int, hidden_dims: List[int] = None):
-        super(SimpleClassifier, self).__init__()
-        
+    """Feedforward classifier. Default uses LayerNorm to avoid BN running-stat issues."""
+    def __init__(self, input_dim: int, num_classes: int, hidden_dims: List[int] = None, use_batchnorm: bool = False):
+        super().__init__()
         if hidden_dims is None:
             hidden_dims = [512, 256]
-        
         layers = []
-        prev_dim = input_dim
-        
-        for hidden_dim in hidden_dims:
-            layers.extend([
-                nn.Linear(prev_dim, hidden_dim),
-                nn.BatchNorm1d(hidden_dim),
-                nn.ReLU(),
-                nn.Dropout(0.3)
-            ])
-            prev_dim = hidden_dim
-        
-        layers.append(nn.Linear(prev_dim, num_classes))
-        
-        self.network = nn.Sequential(*layers)
-        self._initialize_weights()
-    
-    def _initialize_weights(self):
-        """Initialize network weights using Xavier initialization."""
+        prev = input_dim
+        for h in hidden_dims:
+            layers.append(nn.Linear(prev, h))
+            if use_batchnorm:
+                layers.append(nn.BatchNorm1d(h))
+            else:
+                layers.append(nn.LayerNorm(h))
+            layers.append(nn.ReLU())
+            layers.append(nn.Dropout(0.2))
+            prev = h
+        layers.append(nn.Linear(prev, num_classes))
+        self.net = nn.Sequential(*layers)
+        self._init_weights()
+
+    def _init_weights(self):
         for m in self.modules():
             if isinstance(m, nn.Linear):
                 nn.init.xavier_uniform_(m.weight)
                 if m.bias is not None:
-                    nn.init.constant_(m.bias, 0)
-    
+                    nn.init.constant_(m.bias, 0.0)
+
     def forward(self, x: torch.Tensor) -> torch.Tensor:
-        return self.network(x)
+        return self.net(x)
 
 
+# ----------------------------- Distiller Class --------------------------------
 class DatasetDistiller:
     """
-    Dataset distillation using trajectory matching.
-    
-    Key fix: Completely avoids in-place operations that break autograd.
+    Dataset distillation with SelMatch-like initialization and MTT-style short unrolling.
+
+    Key options:
+      - selection_strategy: 'random' | 'margin' (difficulty based on classifier margin)
+      - partial_update: fraction of synthetic set updated each epoch
+      - use_batchnorm: whether classifier uses BatchNorm (default False -> LayerNorm)
     """
-    
+
     def __init__(
         self,
         feature_dim: int,
@@ -66,17 +78,17 @@ class DatasetDistiller:
         device: str = "cuda",
         learning_rate: float = 0.01,
         distill_lr: float = 0.1,
-        distill_epochs: int = 100,
+        distill_epochs: int = 200,
         inner_epochs: int = 10,
+        expert_epochs: int = 120,
         batch_size: int = 256,
-        expert_epochs: int = 50
+        unroll_steps: int = 5,
+        selection_strategy: str = 'random',
+        partial_update_frac: float = 1.0,
+        use_batchnorm: bool = False,
+        seed: Optional[int] = 42,
     ):
-        self.device = torch.device(device if torch.cuda.is_available() else "cpu")
-        if device == "cuda" and not torch.cuda.is_available():
-            warnings.warn(
-                f"CUDA device requested but not available. Using CPU instead.",
-                RuntimeWarning
-            )
+        self.device = torch.device(device if torch.cuda.is_available() else 'cpu')
         self.feature_dim = feature_dim
         self.num_classes = num_classes
         self.images_per_class = images_per_class
@@ -86,441 +98,369 @@ class DatasetDistiller:
         self.inner_epochs = inner_epochs
         self.expert_epochs = expert_epochs
         self.batch_size = batch_size
-        
-        self.synthesized_features = None
-        self.synthesized_labels = None
-        self.expert_trajectory = None
-        
+        self.unroll_steps = min(unroll_steps, inner_epochs)
+        self.selection_strategy = selection_strategy
+        self.partial_update_frac = float(partial_update_frac)
+        self.use_batchnorm = use_batchnorm
+        self.seed = seed
+
+        if seed is not None:
+            torch.manual_seed(seed)
+            random.seed(seed)
+
+        # synthesized features and labels (initialized later)
+        self.synthesized_features: Optional[torch.Tensor] = None
+        self.synthesized_labels: Optional[torch.Tensor] = None
+
         print(f"Dataset distiller initialized on {self.device}")
-        print(f"Target: {images_per_class} images per class, {num_classes} classes")
-        print(f"Total synthesized images: {images_per_class * num_classes}")
-        print(f"Expert epochs: {expert_epochs}, Student epochs: {inner_epochs}")
-    
-    def initialize_synthesized_data(
-        self,
-        real_features: torch.Tensor,
-        pseudo_labels: torch.Tensor
-    ):
-        """Initialize synthesized features by sampling from real features."""
-        print("Initializing synthesized features...")
-        
-        real_features = real_features.to(self.device)
-        pseudo_labels = pseudo_labels.to(self.device)
-        
-        synthesized_list = []
-        label_list = []
-        
-        for class_id in range(self.num_classes):
-            class_mask = pseudo_labels == class_id
-            class_features = real_features[class_mask]
-            
-            if len(class_features) == 0:
-                init_features = torch.randn(
-                    self.images_per_class, self.feature_dim,
-                    device=self.device
-                ) * 0.01
-            elif len(class_features) < self.images_per_class:
-                indices = torch.randint(
-                    0, len(class_features),
-                    (self.images_per_class,),
-                    device=self.device
-                )
-                init_features = class_features[indices].clone()
-            else:
-                indices = torch.randperm(len(class_features), device=self.device)[:self.images_per_class]
-                init_features = class_features[indices].clone()
-            
-            init_features += torch.randn_like(init_features) * 0.001
-            
-            synthesized_list.append(init_features)
-            label_list.extend([class_id] * self.images_per_class)
-        
-        self.synthesized_features = torch.cat(synthesized_list, dim=0)
-        self.synthesized_features.requires_grad = True
-        
-        self.synthesized_labels = torch.tensor(
-            label_list, dtype=torch.long, device=self.device
-        )
-        
-        print(f"Synthesized features initialized: {self.synthesized_features.shape}")
-    
-    def create_model(self) -> SimpleClassifier:
-        """Create a fresh classifier model."""
-        model = SimpleClassifier(
-            input_dim=self.feature_dim,
-            num_classes=self.num_classes
-        ).to(self.device)
-        return model
-    
-    def get_expert_trajectory(
-        self,
-        real_features: torch.Tensor,
-        pseudo_labels: torch.Tensor
-    ) -> List[torch.Tensor]:
+        print(f"Target: {images_per_class} images/class, total={images_per_class * num_classes}")
+        print(f"Selection: {self.selection_strategy}, partial_update_frac={self.partial_update_frac}")
+
+    # ------------------------ Initialization / Selection ----------------------
+    def _compute_margin_scores(self, features: torch.Tensor, labels: torch.Tensor, epochs: int = 20) -> torch.Tensor:
         """
-        Compute expert trajectory on real data (done once).
-        
-        Returns flat parameter tensors at each epoch.
+        Train a small classifier briefly and compute margin (top1 - top2) for each sample.
+        Lower margin = harder sample.
+        Returns margin scores (higher = easier). We'll invert to get difficulty if needed.
         """
-        print("Computing expert trajectory on real data...")
-        
-        real_features = real_features.to(self.device)
-        pseudo_labels = pseudo_labels.to(self.device)
-        
-        model = self.create_model()
-        optimizer = torch.optim.SGD(model.parameters(), lr=self.learning_rate, momentum=0.9)
-        criterion = nn.CrossEntropyLoss()
-        
-        dataset = TensorDataset(real_features, pseudo_labels)
-        loader = DataLoader(
-            dataset, batch_size=self.batch_size, shuffle=True,
-            pin_memory=False, drop_last=False
-        )
-        
-        trajectory = []
-        
+        device = self.device
+        features = features.to(device)
+        labels = labels.to(device)
+        model = SimpleClassifier(self.feature_dim, self.num_classes, use_batchnorm=self.use_batchnorm).to(device)
+        opt = torch.optim.SGD(model.parameters(), lr=0.1, momentum=0.9)
+        crit = nn.CrossEntropyLoss()
+        ds = TensorDataset(features, labels)
+        loader = DataLoader(ds, batch_size=min(1024, len(features)), shuffle=True)
         model.train()
-        for epoch in range(self.expert_epochs):
-            for batch_features, batch_labels in loader:
-                batch_features = batch_features.to(self.device)
-                batch_labels = batch_labels.to(self.device)
-                
-                optimizer.zero_grad()
-                outputs = model(batch_features)
-                loss = criterion(outputs, batch_labels)
-                loss.backward()
-                optimizer.step()
-            
-            # Save flattened parameters (detached)
-            flat_params = torch.cat([p.data.flatten() for p in model.parameters()])
-            trajectory.append(flat_params.clone())
-            
-            if (epoch + 1) % 10 == 0:
-                print(f"  Expert epoch {epoch+1}/{self.expert_epochs}")
-        
-        print("Expert trajectory computed!")
-        return trajectory
-    
-    def train_student_with_gradients(
-        self,
-        synthetic_features: torch.Tensor,
-        synthetic_labels: torch.Tensor,
-        epochs: int
-    ) -> List[torch.Tensor]:
+        for _ in range(epochs):
+            for xb, yb in loader:
+                xb = xb.to(device); yb = yb.to(device)
+                opt.zero_grad()
+                out = model(xb)
+                loss = crit(out, yb)
+                loss.backward(); opt.step()
+        model.eval()
+        with torch.no_grad():
+            logits = model(features)
+            probs = F.softmax(logits, dim=1)
+            top2 = torch.topk(probs, 2, dim=1).values
+            margin = top2[:, 0] - top2[:, 1]
+        return margin.cpu()
+
+    def initialize_synthesized_data(self, real_features: torch.Tensor, pseudo_labels: torch.Tensor):
         """
-        Train student model on synthetic data while maintaining gradient flow.
-        
-        KEY FIX: Uses functional programming approach - no in-place ops!
-        
-        Returns:
-            List of flat parameter tensors at each step
+        Initialize synthesized features according to selection_strategy.
+        - 'random': sample uniformly per class
+        - 'margin': compute margin scores and pick hardest samples per class
         """
-        # Create a fresh student model
-        student_model = self.create_model()
-        criterion = nn.CrossEntropyLoss()
-        
-        # Helper to get flat parameters
-        def get_flat_params(model):
-            return torch.cat([p.flatten() for p in model.parameters()])
-        
-        # Helper to unflatten parameters
-        def unflatten_params(flat_params, shapes):
-            params = []
-            offset = 0
-            for shape in shapes:
-                numel = torch.prod(torch.tensor(shape)).item()
-                params.append(flat_params[offset:offset+numel].view(shape))
-                offset += numel
-            return params
-        
-        # Get parameter shapes
-        param_shapes = [p.shape for p in student_model.parameters()]
-        
-        # Initialize with current model parameters (with gradient tracking)
-        current_params = [p.clone() for p in student_model.parameters()]
-        
-        trajectory = []
-        
-        for epoch in range(epochs):
-            # Reconstruct model with current parameters
-            # This creates a NEW computation graph each time
-            idx = 0
-            for param in student_model.parameters():
-                param.data = current_params[idx].data
-                idx += 1
-            
-            # Forward pass
-            outputs = student_model(synthetic_features)
-            loss = criterion(outputs, synthetic_labels)
-            
-            # Compute gradients w.r.t. model parameters
-            grads = torch.autograd.grad(
-                loss,
-                student_model.parameters(),
-                create_graph=True,
-                retain_graph=False  # Don't need to retain between epochs
-            )
-            
-            # SGD update (fully differentiable, no in-place ops!)
-            new_params = []
-            for param, grad in zip(current_params, grads):
-                # Create NEW tensor (not in-place!)
-                new_param = param - self.learning_rate * grad
-                new_params.append(new_param)
-            
-            current_params = new_params
-            
-            # Record trajectory as flat tensor
-            flat_params = torch.cat([p.flatten() for p in current_params])
-            trajectory.append(flat_params)
-        
-        return trajectory
-    
-    def compute_trajectory_distance(
-        self,
-        expert_trajectory: List[torch.Tensor],
-        student_trajectory: List[torch.Tensor]
-    ) -> torch.Tensor:
+        rf = real_features.cpu()
+        pl = pseudo_labels.cpu()
+        N = self.images_per_class * self.num_classes
+
+        if self.selection_strategy == 'margin':
+            print("Computing margin scores for selection (this trains a small expert briefly)")
+            margin = self._compute_margin_scores(rf, pl, epochs=30)  # small expert
+            # difficulty = -margin (lower margin = harder)
+            difficulty = -margin
+
+        # Build synthesized set
+        synth_list = []
+        label_list: List[int] = []
+        for class_id in range(self.num_classes):
+            mask = (pl == class_id)
+            class_feats = rf[mask]
+            if class_feats.shape[0] == 0:
+                # no samples -> tiny random vectors
+                init = torch.randn(self.images_per_class, self.feature_dim) * 1e-2
+            else:
+                if self.selection_strategy == 'random':
+                    if class_feats.shape[0] >= self.images_per_class:
+                        idx = torch.randperm(class_feats.shape[0])[:self.images_per_class]
+                        init = class_feats[idx].clone()
+                    else:
+                        idx = torch.randint(0, class_feats.shape[0], (self.images_per_class,))
+                        init = class_feats[idx].clone()
+                elif self.selection_strategy == 'margin':
+                    class_idx = torch.nonzero(mask).squeeze(1)
+                    class_difficulty = difficulty[class_idx]
+                    # pick hardest (largest difficulty) samples
+                    if class_feats.shape[0] >= self.images_per_class:
+                        _, order = torch.sort(class_difficulty, descending=True)
+                        sel = order[:self.images_per_class]
+                        init = class_feats[sel].clone()
+                    else:
+                        # pad with replacements
+                        _, order = torch.sort(class_difficulty, descending=True)
+                        repeats = torch.randint(0, class_feats.shape[0], (self.images_per_class,))
+                        init = class_feats[repeats].clone()
+                else:
+                    raise ValueError(f"Unknown selection strategy: {self.selection_strategy}")
+            # small gaussian noise to break symmetry
+            init += torch.randn_like(init) * 1e-3
+            synth_list.append(init)
+            label_list.extend([class_id] * self.images_per_class)
+
+        synth = torch.cat(synth_list, dim=0).to(self.device)
+        synth.requires_grad_(True)
+        labels = torch.tensor(label_list, dtype=torch.long, device=self.device)
+
+        self.synthesized_features = synth
+        self.synthesized_labels = labels
+        print(f"Synthesized features initialized: {self.synthesized_features.shape}")
+
+    # ------------------------ Expert & Student routines ----------------------
+    def create_model(self) -> nn.Module:
+        return SimpleClassifier(self.feature_dim, self.num_classes, use_batchnorm=self.use_batchnorm).to(self.device)
+
+    def train_expert(self, real_features: torch.Tensor, pseudo_labels: torch.Tensor, epochs: Optional[int] = None) -> List[torch.Tensor]:
         """
-        Compute normalized distance between expert and student trajectories.
-        
-        Both trajectories are now lists of flat parameter tensors.
+        Train expert to (near) convergence and return final parameters list (detached tensors).
         """
-        distances = []
-        
-        # Sample epochs for efficiency (every 5 epochs + last)
-        sample_epochs = list(range(0, min(len(expert_trajectory), len(student_trajectory)), 5))
-        last_epoch = min(len(expert_trajectory), len(student_trajectory)) - 1
-        if last_epoch not in sample_epochs and last_epoch >= 0:
-            sample_epochs.append(last_epoch)
-        
-        for t in sample_epochs:
-            expert_flat = expert_trajectory[t].detach()
-            student_flat = student_trajectory[t]
-            
-            # Normalized L2 distance
-            diff = student_flat - expert_flat
-            dist = torch.sum(diff ** 2) / len(diff)
-            distances.append(dist)
-        
-        if len(distances) == 0:
-            return torch.tensor(0.0, device=self.device, requires_grad=True)
-        
-        return torch.stack(distances).mean()
-    
-    def distill(
-        self,
-        real_features: torch.Tensor,
-        pseudo_labels: torch.Tensor,
-        verbose: bool = True
-    ) -> Tuple[torch.Tensor, torch.Tensor]:
+        if epochs is None:
+            epochs = self.expert_epochs
+        model = self.create_model()
+        opt = torch.optim.SGD(model.parameters(), lr=self.learning_rate, momentum=0.9)
+        crit = nn.CrossEntropyLoss()
+        ds = TensorDataset(real_features.to(self.device), pseudo_labels.to(self.device))
+        loader = DataLoader(ds, batch_size=self.batch_size, shuffle=True)
+        model.train()
+        for ep in range(epochs):
+            for xb, yb in loader:
+                xb = xb.to(self.device); yb = yb.to(self.device)
+                opt.zero_grad()
+                out = model(xb)
+                loss = crit(out, yb)
+                loss.backward(); opt.step()
+        # return final params (detached)
+        final = [p.data.clone().detach().cpu() for p in model.parameters()]
+        return final
+
+    def train_student_unroll(self, synth_features: torch.Tensor, synth_labels: torch.Tensor, unroll_steps: Optional[int] = None) -> List[List[torch.Tensor]]:
         """
-        Perform dataset distillation by matching training trajectories.
+        Train a fresh student for a few differentiable steps using synthetic features.
+        Returns list of parameter snapshots (each as list of tensors) for each unroll step.
         """
-        print("\n" + "="*80)
-        print("Dataset Distillation with Trajectory Matching")
-        print("="*80)
-        
-        # Initialize synthesized data
-        self.initialize_synthesized_data(real_features, pseudo_labels)
-        
-        # Compute expert trajectory ONCE
-        self.expert_trajectory = self.get_expert_trajectory(real_features, pseudo_labels)
-        
-        # Optimizer for synthesized features
-        feature_optimizer = torch.optim.Adam([self.synthesized_features], lr=self.distill_lr)
-        
-        # Distillation loop
+        if unroll_steps is None:
+            unroll_steps = self.unroll_steps
+        model = self.create_model()
+        crit = nn.CrossEntropyLoss()
+        param_snapshots = []
+
+        # We will perform differentiable updates using torch.autograd.grad
+        for step in range(unroll_steps):
+            out = model(synth_features)
+            loss = crit(out, synth_labels)
+            grads = torch.autograd.grad(loss, model.parameters(), create_graph=True)
+            # Manual SGD update (no momentum to keep simple and differentiable)
+            with torch.no_grad():
+                for p, g in zip(model.parameters(), grads):
+                    p.sub_(self.learning_rate * g)
+            # record snapshots (we need tensors that track graph for backprop to synthetic features)
+            param_snapshots.append([p.clone() for p in model.parameters()])
+        return param_snapshots
+
+    # ------------------------ Distance & Training ---------------------------
+    def _parameter_distance(self, expert_params: List[torch.Tensor], student_params: List[torch.Tensor]) -> torch.Tensor:
+        """
+        Compute normalized L2 distance between lists of parameters.
+        expert_params are detached CPU tensors; student_params are tensors on device (require grad).
+        We normalize per-parameter by number of elements.
+        Returns scalar tensor (on device).
+        """
+        device = self.device
+        dists = []
+        for ep, sp in zip(expert_params, student_params):
+            # move expert param to device, detach
+            ep_dev = ep.to(device)
+            diff = (sp - ep_dev) ** 2
+            dists.append(diff.sum() / ep.numel())
+        return torch.stack(dists).mean()
+
+    def distill(self, real_features: torch.Tensor, pseudo_labels: torch.Tensor, verbose: bool = True) -> Tuple[torch.Tensor, torch.Tensor]:
+        """
+        Main distillation loop. Returns synthesized_features.detach(), synthesized_labels
+        """
+        real_features = real_features.to(self.device)
+        pseudo_labels = pseudo_labels.to(self.device)
+
+        # 1) initialize synthesized data
+        self.initialize_synthesized_data(real_features.cpu(), pseudo_labels.cpu())
+
+        # 2) compute expert final params
+        if verbose:
+            print("Training expert (may take time)...")
+        expert_final = self.train_expert(real_features, pseudo_labels)
+
+        # 3) optimizer for synthesized features
+        # wrap as parameter so optimizer state is stable
+        synth_param = nn.Parameter(self.synthesized_features)
+        opt = torch.optim.Adam([synth_param], lr=self.distill_lr)
+
         best_distance = float('inf')
         best_features = None
-        prev_distance = float('inf')
-        
-        print(f"\nStarting distillation for {self.distill_epochs} epochs...")
-        print(f"Optimizing {len(self.synthesized_features)} synthetic samples...")
-        
+
+        # Precompute indices for partial update scheduling
+        total_synth = synth_param.numel() // self.feature_dim
+        synth_indices = list(range(total_synth))
+
         for epoch in tqdm(range(self.distill_epochs), desc="Distillation"):
-            # Train student on synthetic data (maintains gradients!)
-            student_trajectory = self.train_student_with_gradients(
-                self.synthesized_features,
-                self.synthesized_labels,
-                self.inner_epochs
-            )
-            
-            # Compute trajectory distance
-            distance = self.compute_trajectory_distance(
-                self.expert_trajectory,
-                student_trajectory
-            )
-            
-            # Update synthesized features
-            feature_optimizer.zero_grad()
+            # decide which synthesized indices to update this epoch (partial updates)
+            k = max(1, int(self.partial_update_frac * total_synth))
+            # simple random subset schedule
+            update_idx = set(random.sample(synth_indices, k)) if k < total_synth else set(synth_indices)
+
+            # create view: when computing loss/backward, only those synth vectors should contribute
+            # easiest: create masked_features where non-updated items are detached from graph
+            with torch.no_grad():
+                curr = synth_param.data.clone()
+            # build synth_features_for_student (requires_grad=True)
+            synth_for_student = curr.clone().detach().to(self.device)
+            # ensure the selected indices are requires_grad for the optimization graph
+            # we will set up so synthetic parameter as a whole is optimized; mask gradients later
+            # But for student unroll we need a tensor that depends on synth_param for autograd
+            # so build synth_features as gather from synth_param
+            synth_features = synth_param
+
+            # train student with unroll steps
+            # NOTE: student unroll uses synth_features directly and requires_graph for grads to flow
+            student_snapshots = self.train_student_unroll(synth_features, self.synthesized_labels)
+            # compute distance between expert and student's final snapshot
+            student_final = student_snapshots[-1]
+            distance = self._parameter_distance(expert_final, student_final)
+
+            # backward on distance to update synth_param
+            opt.zero_grad()
             distance.backward()
-            
-            # Gradient clipping for stability
-            torch.nn.utils.clip_grad_norm_([self.synthesized_features], max_norm=1.0)
-            
-            feature_optimizer.step()
-            
-            # Track best result
-            dist_val = distance.item()
-            if dist_val < best_distance:
-                best_distance = dist_val
-                best_features = self.synthesized_features.data.clone()
-            
-            # Compute improvement
-            improvement = ((prev_distance - dist_val) / prev_distance * 100) if epoch > 0 else 0.0
-            prev_distance = dist_val
-            
+
+            # apply gradient mask for partial updates: zero gradients for frozen synth vectors
+            if synth_param.grad is not None and k < total_synth:
+                # synth_param shape: (total_synth, feature_dim)
+                grad = synth_param.grad.view(-1, self.feature_dim)
+                mask = torch.zeros_like(grad)
+                upd_list = torch.tensor(list(update_idx), device=grad.device)
+                mask[upd_list] = 1.0
+                grad.mul_(mask)
+                synth_param.grad.copy_(grad.view(-1))
+
+            # gradient clipping and step
+            torch.nn.utils.clip_grad_norm_([synth_param], max_norm=5.0)
+            opt.step()
+
+            # track best
+            val = distance.item()
+            if val < best_distance:
+                best_distance = val
+                best_features = synth_param.data.clone().detach()
+
             if verbose and (epoch + 1) % 10 == 0:
-                print(f"\nEpoch {epoch+1}/{self.distill_epochs}")
-                print(f"  Distance: {dist_val:.6f}")
-                print(f"  Best: {best_distance:.6f}")
-                print(f"  Improvement: {improvement:+.2f}%")
-        
-        # Use best features
+                print(f"Epoch {epoch+1}/{self.distill_epochs} - distance={val:.6f} best={best_distance:.6f}")
+
+        # restore best features
         if best_features is not None:
-            self.synthesized_features = best_features.requires_grad_()
-        
-        print(f"\n{'='*80}")
-        print(f"Distillation complete! Best distance: {best_distance:.6f}")
-        print(f"{'='*80}\n")
-        
+            self.synthesized_features = best_features.to(self.device)
+        else:
+            self.synthesized_features = synth_param.data.clone().detach().to(self.device)
+
+        # set labels (already present)
+        self.synthesized_labels = self.synthesized_labels.to(self.device)
+
         return self.synthesized_features.detach(), self.synthesized_labels
-    
+
+    # ------------------------ Evaluation ------------------------------------
     def evaluate_distilled_data(
         self,
         real_features: torch.Tensor,
         pseudo_labels: torch.Tensor,
         test_features: Optional[torch.Tensor] = None,
         test_labels: Optional[torch.Tensor] = None,
-        num_trials: int = 5
+        num_trials: int = 5,
+        train_epochs: int = 50
     ) -> Dict[str, float]:
-        """Evaluate the quality of distilled data."""
-        print("\n" + "="*80)
-        print("Evaluating Distilled Data")
-        print("="*80)
-        
+        """
+        Evaluate distilled data by training models on distilled vs real data.
+        Returns averaged metrics.
+        """
         real_features = real_features.to(self.device)
         pseudo_labels = pseudo_labels.to(self.device)
-        
         if test_features is not None:
             test_features = test_features.to(self.device)
             test_labels = test_labels.to(self.device)
-        
+
         results = {
             'distilled_train_acc': [],
             'distilled_test_acc': [],
             'real_train_acc': [],
             'real_test_acc': []
         }
-        
+
         for trial in range(num_trials):
-            # Train on distilled data
+            # train on distilled
             distilled_model = self.create_model()
-            optimizer = torch.optim.SGD(
-                distilled_model.parameters(),
-                lr=self.learning_rate,
-                momentum=0.9
-            )
-            criterion = nn.CrossEntropyLoss()
-            
+            opt = torch.optim.SGD(distilled_model.parameters(), lr=self.learning_rate, momentum=0.9)
+            crit = nn.CrossEntropyLoss()
             distilled_model.train()
-            for _ in range(50):
-                optimizer.zero_grad()
-                outputs = distilled_model(self.synthesized_features)
-                loss = criterion(outputs, self.synthesized_labels)
-                loss.backward()
-                optimizer.step()
-            
-            # Evaluate
+            # small dataset: synthesized_features, synthesized_labels
+            synth_ds = TensorDataset(self.synthesized_features.detach(), self.synthesized_labels)
+            synth_loader = DataLoader(synth_ds, batch_size=min(256, len(self.synthesized_features)), shuffle=True)
+            for ep in range(train_epochs):
+                for xb, yb in synth_loader:
+                    xb = xb.to(self.device); yb = yb.to(self.device)
+                    opt.zero_grad(); out = distilled_model(xb); loss = crit(out, yb)
+                    loss.backward(); opt.step()
             distilled_model.eval()
             with torch.no_grad():
-                train_outputs = distilled_model(real_features)
-                train_preds = torch.argmax(train_outputs, dim=1)
-                train_acc = (train_preds == pseudo_labels).float().mean().item()
-                results['distilled_train_acc'].append(train_acc)
-                
+                train_out = distilled_model(real_features)
+                train_pred = torch.argmax(train_out, dim=1)
+                results['distilled_train_acc'].append((train_pred == pseudo_labels).float().mean().item())
                 if test_features is not None:
-                    test_outputs = distilled_model(test_features)
-                    test_preds = torch.argmax(test_outputs, dim=1)
-                    test_acc = (test_preds == test_labels).float().mean().item()
-                    results['distilled_test_acc'].append(test_acc)
-            
-            # Train on real data
+                    test_out = distilled_model(test_features)
+                    test_pred = torch.argmax(test_out, dim=1)
+                    results['distilled_test_acc'].append((test_pred == test_labels).float().mean().item())
+
+            # train on real data (baseline)
             real_model = self.create_model()
-            optimizer_real = torch.optim.SGD(real_model.parameters(), lr=self.learning_rate, momentum=0.9)
-            dataset = TensorDataset(real_features, pseudo_labels)
-            loader = DataLoader(dataset, batch_size=self.batch_size, shuffle=True)
-            
+            opt_real = torch.optim.SGD(real_model.parameters(), lr=self.learning_rate, momentum=0.9)
+            real_ds = TensorDataset(real_features, pseudo_labels)
+            real_loader = DataLoader(real_ds, batch_size=self.batch_size, shuffle=True)
             real_model.train()
-            for _ in range(50):
-                for batch_features, batch_labels in loader:
-                    batch_features = batch_features.to(self.device)
-                    batch_labels = batch_labels.to(self.device)
-                    optimizer_real.zero_grad()
-                    outputs = real_model(batch_features)
-                    loss = criterion(outputs, batch_labels)
-                    loss.backward()
-                    optimizer_real.step()
-            
-            # Evaluate
+            for ep in range(train_epochs):
+                for xb, yb in real_loader:
+                    xb = xb.to(self.device); yb = yb.to(self.device)
+                    opt_real.zero_grad(); out = real_model(xb); loss = crit(out, yb)
+                    loss.backward(); opt_real.step()
             real_model.eval()
             with torch.no_grad():
-                train_outputs = real_model(real_features)
-                train_preds = torch.argmax(train_outputs, dim=1)
-                train_acc = (train_preds == pseudo_labels).float().mean().item()
-                results['real_train_acc'].append(train_acc)
-                
+                train_out = real_model(real_features)
+                train_pred = torch.argmax(train_out, dim=1)
+                results['real_train_acc'].append((train_pred == pseudo_labels).float().mean().item())
                 if test_features is not None:
-                    test_outputs = real_model(test_features)
-                    test_preds = torch.argmax(test_outputs, dim=1)
-                    test_acc = (test_preds == test_labels).float().mean().item()
-                    results['real_test_acc'].append(test_acc)
-        
-        # Compute averages
-        avg_results = {
-            'distilled_train_acc': torch.tensor(results['distilled_train_acc']).mean().item(),
-            'distilled_train_std': torch.tensor(results['distilled_train_acc']).std().item(),
-            'real_train_acc': torch.tensor(results['real_train_acc']).mean().item(),
-            'real_train_std': torch.tensor(results['real_train_acc']).std().item()
+                    test_out = real_model(test_features)
+                    test_pred = torch.argmax(test_out, dim=1)
+                    results['real_test_acc'].append((test_pred == test_labels).float().mean().item())
+
+        # aggregate
+        summary = {
+            'distilled_train_acc': float(torch.tensor(results['distilled_train_acc']).mean()),
+            'distilled_train_std': float(torch.tensor(results['distilled_train_acc']).std()),
+            'real_train_acc': float(torch.tensor(results['real_train_acc']).mean()),
+            'real_train_std': float(torch.tensor(results['real_train_acc']).std())
         }
-        
         if test_features is not None:
-            avg_results.update({
-                'distilled_test_acc': torch.tensor(results['distilled_test_acc']).mean().item(),
-                'distilled_test_std': torch.tensor(results['distilled_test_acc']).std().item(),
-                'real_test_acc': torch.tensor(results['real_test_acc']).mean().item(),
-                'real_test_std': torch.tensor(results['real_test_acc']).std().item()
+            summary.update({
+                'distilled_test_acc': float(torch.tensor(results['distilled_test_acc']).mean()),
+                'distilled_test_std': float(torch.tensor(results['distilled_test_acc']).std()),
+                'real_test_acc': float(torch.tensor(results['real_test_acc']).mean()),
+                'real_test_std': float(torch.tensor(results['real_test_acc']).std()),
             })
-        
-        # Print results
-        print("\nEvaluation Results (averaged over {} trials):".format(num_trials))
-        print("-" * 80)
-        print(f"Model trained on DISTILLED data:")
-        print(f"  Train Accuracy: {avg_results['distilled_train_acc']:.4f} ± {avg_results['distilled_train_std']:.4f}")
-        if test_features is not None:
-            print(f"  Test Accuracy:  {avg_results['distilled_test_acc']:.4f} ± {avg_results['distilled_test_std']:.4f}")
-        
-        print(f"\nModel trained on REAL data:")
-        print(f"  Train Accuracy: {avg_results['real_train_acc']:.4f} ± {avg_results['real_train_std']:.4f}")
-        if test_features is not None:
-            print(f"  Test Accuracy:  {avg_results['real_test_acc']:.4f} ± {avg_results['real_test_std']:.4f}")
-        
-        if test_features is not None:
-            performance_ratio = avg_results['distilled_test_acc'] / avg_results['real_test_acc']
-            compression_ratio = len(self.synthesized_features) / len(real_features)
-            print(f"\nPerformance Ratio (distilled/real): {performance_ratio:.4f}")
-            print(f"Compression Ratio: {compression_ratio:.4f} ({len(self.synthesized_features)}/{len(real_features)})")
-        
-        print("-" * 80)
-        
-        return avg_results
-    
-    def save_distilled_data(self, path: str):
-        """Save distilled features and labels to disk."""
+            summary['performance_ratio'] = summary['distilled_test_acc'] / max(1e-8, summary['real_test_acc'])
+            summary['compression_ratio'] = (len(self.synthesized_features) / len(real_features))
+
+        return summary
+
+    # ------------------------ Save / Load ----------------------------------
+    def save_distilled(self, path: str):
         if self.synthesized_features is None:
-            raise ValueError("No distilled data to save. Run distill() first.")
-        
+            raise ValueError("No synthesized features to save")
         torch.save({
             'features': self.synthesized_features.detach().cpu(),
             'labels': self.synthesized_labels.cpu(),
@@ -528,29 +468,18 @@ class DatasetDistiller:
             'num_classes': self.num_classes,
             'images_per_class': self.images_per_class
         }, path)
-        print(f"Distilled data saved to {path}")
-    
+        print(f"Saved distilled data to {path}")
+
     @staticmethod
-    def load_distilled_data(path: str, device: str = "cuda") -> Tuple[torch.Tensor, torch.Tensor, Dict]:
-        """Load distilled data from disk."""
-        target_device = torch.device(device if torch.cuda.is_available() else "cpu")
-        if device == "cuda" and not torch.cuda.is_available():
-            warnings.warn(
-                f"CUDA device requested but not available. Using CPU instead.",
-                RuntimeWarning
-            )
-        
-        checkpoint = torch.load(path, map_location=target_device)
-        
-        metadata = {
-            'feature_dim': checkpoint['feature_dim'],
-            'num_classes': checkpoint['num_classes'],
-            'images_per_class': checkpoint['images_per_class']
+    def load_distilled(path: str, device: str = 'cuda') -> Tuple[torch.Tensor, torch.Tensor, Dict]:
+        dev = torch.device(device if torch.cuda.is_available() else 'cpu')
+        ckpt = torch.load(path, map_location=dev)
+        meta = {
+            'feature_dim': ckpt['feature_dim'],
+            'num_classes': ckpt['num_classes'],
+            'images_per_class': ckpt['images_per_class']
         }
-        
-        print(f"Distilled data loaded from {path}")
-        print(f"  Feature dim: {metadata['feature_dim']}")
-        print(f"  Num classes: {metadata['num_classes']}")
-        print(f"  Images per class: {metadata['images_per_class']}")
-        
-        return checkpoint['features'], checkpoint['labels'], metadata
+        return ckpt['features'].to(dev), ckpt['labels'].to(dev), meta
+
+
+# ----------------------------- End of file ----------------------------------
