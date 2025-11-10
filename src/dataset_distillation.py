@@ -371,44 +371,46 @@ class DatasetDistiller:
         self,
         real_features: torch.Tensor,
         pseudo_labels: torch.Tensor,
-        test_features: Optional[torch.Tensor] = None,
-        test_labels: Optional[torch.Tensor] = None,
+        test_features: torch.Tensor,
+        test_labels: torch.Tensor,
         num_trials: int = 5,
         train_epochs: int = 50,
         images_per_class_eval: Optional[int] = None,
         labeled_data_percentage: float = 1.0
     ) -> Dict[str, float]:
         """
-        Evaluate distilled data by training models on distilled vs real data.
+        Evaluate distilled data by training on distilled/real data and testing on held-out test set with TRUE labels.
+        
+        This removes data leakage by:
+        1. Training models on distilled data (with pseudo labels from clustering)
+        2. Testing ONLY on a separate held-out test set with ground-truth labels
+        3. No evaluation on training data with pseudo labels
         
         Args:
-            real_features: Real feature tensor (N, feature_dim)
-            pseudo_labels: Pseudo labels for real features (N,)
-            test_features: Optional test features
-            test_labels: Optional test labels
+            real_features: Real training feature tensor (N, feature_dim)
+            pseudo_labels: Pseudo labels from clustering for training data (N,)
+            test_features: REQUIRED - Test features with ground-truth labels
+            test_labels: REQUIRED - Ground-truth test labels (not pseudo labels)
             num_trials: Number of evaluation trials
             train_epochs: Training epochs per trial
             images_per_class_eval: If provided, use only this many distilled images per class for evaluation
-            labeled_data_percentage: Percentage of labeled data to use (0.0-1.0), simulates semi-supervised learning
+            labeled_data_percentage: Percentage of labeled real data to use (0.0-1.0), simulates semi-supervised learning
         
         Returns:
-            Dictionary with evaluation metrics
+            Dictionary with test accuracy metrics (no train accuracy to avoid confusion)
         """
         # Ensure all tensors are on the correct device
         real_features = real_features.to(self.device)
         pseudo_labels = pseudo_labels.to(self.device)
-        if test_features is not None:
-            test_features = test_features.to(self.device)
-            test_labels = test_labels.to(self.device)
+        test_features = test_features.to(self.device)
+        test_labels = test_labels.to(self.device)
 
         # Validate percentage
         if not 0.0 < labeled_data_percentage <= 1.0:
             raise ValueError(f"labeled_data_percentage must be in (0, 1], got {labeled_data_percentage}")
 
         results = {
-            'distilled_train_acc': [],
             'distilled_test_acc': [],
-            'real_train_acc': [],
             'real_test_acc': []
         }
 
@@ -450,71 +452,72 @@ class DatasetDistiller:
             pseudo_labels_train = pseudo_labels
 
         for trial in range(num_trials):
-            # train on distilled
+            # ===== Train model on DISTILLED data (with pseudo labels) =====
             distilled_model = self.create_model()
             opt = torch.optim.SGD(distilled_model.parameters(), lr=self.learning_rate, momentum=0.9)
             crit = nn.CrossEntropyLoss()
             distilled_model.train()
-            # small dataset: synthesized_features, synthesized_labels
+            
+            # Create dataset from distilled features and pseudo labels
             synth_ds = TensorDataset(eval_synth_features.detach(), eval_synth_labels)
             synth_loader = DataLoader(synth_ds, batch_size=min(256, len(eval_synth_features)), shuffle=True)
+            
             for ep in range(train_epochs):
                 for xb, yb in synth_loader:
-                    xb = xb.to(self.device); yb = yb.to(self.device)
-                    opt.zero_grad(); out = distilled_model(xb); loss = crit(out, yb)
-                    loss.backward(); opt.step()
+                    xb = xb.to(self.device)
+                    yb = yb.to(self.device)
+                    opt.zero_grad()
+                    out = distilled_model(xb)
+                    loss = crit(out, yb)
+                    loss.backward()
+                    opt.step()
+            
+            # ===== Evaluate ONLY on test set with TRUE labels =====
             distilled_model.eval()
             with torch.no_grad():
-                train_out = distilled_model(real_features)
-                train_pred = torch.argmax(train_out, dim=1)
-                results['distilled_train_acc'].append((train_pred == pseudo_labels).float().mean().item())
-                if test_features is not None:
-                    test_out = distilled_model(test_features)
-                    test_pred = torch.argmax(test_out, dim=1)
-                    results['distilled_test_acc'].append((test_pred == test_labels).float().mean().item())
+                test_out = distilled_model(test_features)
+                test_pred = torch.argmax(test_out, dim=1)
+                test_acc = (test_pred == test_labels).float().mean().item()
+                results['distilled_test_acc'].append(test_acc)
 
-            # train on real data (baseline)
+            # ===== Train model on REAL data (baseline, with pseudo labels) =====
             real_model = self.create_model()
             opt_real = torch.optim.SGD(real_model.parameters(), lr=self.learning_rate, momentum=0.9)
             real_ds = TensorDataset(real_features_train, pseudo_labels_train)
             real_loader = DataLoader(real_ds, batch_size=self.batch_size, shuffle=True)
             real_model.train()
+            
             for ep in range(train_epochs):
                 for xb, yb in real_loader:
-                    xb = xb.to(self.device); yb = yb.to(self.device)
-                    opt_real.zero_grad(); out = real_model(xb); loss = crit(out, yb)
-                    loss.backward(); opt_real.step()
+                    xb = xb.to(self.device)
+                    yb = yb.to(self.device)
+                    opt_real.zero_grad()
+                    out = real_model(xb)
+                    loss = crit(out, yb)
+                    loss.backward()
+                    opt_real.step()
+            
+            # ===== Evaluate ONLY on test set with TRUE labels =====
             real_model.eval()
             with torch.no_grad():
-                train_out = real_model(real_features)
-                train_pred = torch.argmax(train_out, dim=1)
-                results['real_train_acc'].append((train_pred == pseudo_labels).float().mean().item())
-                if test_features is not None:
-                    test_out = real_model(test_features)
-                    test_pred = torch.argmax(test_out, dim=1)
-                    results['real_test_acc'].append((test_pred == test_labels).float().mean().item())
+                test_out = real_model(test_features)
+                test_pred = torch.argmax(test_out, dim=1)
+                test_acc = (test_pred == test_labels).float().mean().item()
+                results['real_test_acc'].append(test_acc)
 
-        # aggregate
+        # Aggregate results - only test accuracy matters
         summary = {
-            'distilled_train_acc': float(torch.tensor(results['distilled_train_acc']).mean()),
-            'distilled_train_std': float(torch.tensor(results['distilled_train_acc']).std()),
-            'real_train_acc': float(torch.tensor(results['real_train_acc']).mean()),
-            'real_train_std': float(torch.tensor(results['real_train_acc']).std()),
+            'distilled_test_acc': float(torch.tensor(results['distilled_test_acc']).mean()),
+            'distilled_test_std': float(torch.tensor(results['distilled_test_acc']).std()),
+            'real_test_acc': float(torch.tensor(results['real_test_acc']).mean()),
+            'real_test_std': float(torch.tensor(results['real_test_acc']).std()),
+            'performance_ratio': float(torch.tensor(results['distilled_test_acc']).mean()) / max(1e-8, float(torch.tensor(results['real_test_acc']).mean())),
+            'compression_ratio': len(eval_synth_features) / len(real_features),
             'images_per_class_eval': images_per_class_eval if images_per_class_eval is not None else self.images_per_class,
             'labeled_data_percentage': labeled_data_percentage,
             'eval_synth_size': len(eval_synth_features),
             'real_data_size': len(real_features_train)
         }
-        if test_features is not None:
-            summary.update({
-                'distilled_test_acc': float(torch.tensor(results['distilled_test_acc']).mean()),
-                'distilled_test_std': float(torch.tensor(results['distilled_test_acc']).std()),
-                'real_test_acc': float(torch.tensor(results['real_test_acc']).mean()),
-                'real_test_std': float(torch.tensor(results['real_test_acc']).std()),
-            })
-            summary['performance_ratio'] = summary['distilled_test_acc'] / max(1e-8, summary['real_test_acc'])
-        
-        summary['compression_ratio'] = len(eval_synth_features) / len(real_features)
 
         return summary
 
