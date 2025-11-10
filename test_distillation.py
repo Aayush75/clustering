@@ -261,20 +261,29 @@ def test_complete_distillation_pipeline():
         assert meta['num_classes'] == num_classes
         print("     ✓ Loaded successfully")
         
-        # Step 4: Evaluate
+        # Step 4: Evaluate (now requires test data)
         print("  4. Evaluating distilled data...")
+        
+        # Create separate test set with TRUE labels for proper evaluation
+        test_features = torch.randn(50, feature_dim, device=device)
+        test_labels = torch.randint(0, num_classes, (50,), device=device)
+        
         results = distiller.evaluate_distilled_data(
             real_features=features,
             pseudo_labels=labels,
+            test_features=test_features,
+            test_labels=test_labels,
             num_trials=2,
             train_epochs=10
         )
         
-        assert 'distilled_train_acc' in results
-        assert 'real_train_acc' in results
+        assert 'distilled_test_acc' in results
+        assert 'real_test_acc' in results
         assert 'compression_ratio' in results
-        print(f"     ✓ Distilled train acc: {results['distilled_train_acc']:.4f}")
-        print(f"     ✓ Real train acc: {results['real_train_acc']:.4f}")
+        assert 'performance_ratio' in results
+        print(f"     ✓ Distilled test acc: {results['distilled_test_acc']:.4f}")
+        print(f"     ✓ Real test acc: {results['real_test_acc']:.4f}")
+        print(f"     ✓ Performance ratio: {results['performance_ratio']:.4f}")
         print(f"     ✓ Compression ratio: {results['compression_ratio']:.4f}")
         
         print("✓ Complete pipeline test PASSED")
@@ -310,11 +319,17 @@ def test_evaluation_with_options():
     # Distill
     synth_features, synth_labels = distiller.distill(features, labels, verbose=False)
     
+    # Create test set for evaluation
+    test_features = torch.randn(30, feature_dim, device=device)
+    test_labels = torch.randint(0, num_classes, (30,), device=device)
+    
     # Test 1: Evaluate with subset of images per class
     print("  1. Testing images_per_class_eval option...")
     results1 = distiller.evaluate_distilled_data(
         real_features=features,
         pseudo_labels=labels,
+        test_features=test_features,
+        test_labels=test_labels,
         num_trials=2,
         train_epochs=5,
         images_per_class_eval=5  # Use only 5 images per class
@@ -328,6 +343,8 @@ def test_evaluation_with_options():
     results2 = distiller.evaluate_distilled_data(
         real_features=features,
         pseudo_labels=labels,
+        test_features=test_features,
+        test_labels=test_labels,
         num_trials=2,
         train_epochs=5,
         labeled_data_percentage=0.5  # Use only 50% of labeled data
@@ -341,6 +358,8 @@ def test_evaluation_with_options():
     results3 = distiller.evaluate_distilled_data(
         real_features=features,
         pseudo_labels=labels,
+        test_features=test_features,
+        test_labels=test_labels,
         num_trials=2,
         train_epochs=5,
         images_per_class_eval=3,
@@ -543,6 +562,80 @@ def test_robustness_edge_cases():
     print("✓ Robustness test PASSED")
 
 
+def test_evaluation_no_data_leakage():
+    """Test that evaluation properly uses held-out test set with no data leakage."""
+    print("\n" + "="*80)
+    print("TEST: Evaluation Without Data Leakage")
+    print("="*80)
+    
+    device = "cuda" if torch.cuda.is_available() else "cpu"
+    feature_dim = 32
+    num_train = 100
+    num_test = 30
+    num_classes = 5
+
+    # Create SEPARATE train and test sets
+    train_features = torch.randn(num_train, feature_dim, device=device)
+    train_pseudo_labels = torch.randint(0, num_classes, (num_train,), device=device)
+    
+    # Test set with TRUE labels (different from pseudo labels)
+    test_features = torch.randn(num_test, feature_dim, device=device)
+    test_true_labels = torch.randint(0, num_classes, (num_test,), device=device)
+
+    distiller = DatasetDistiller(
+        feature_dim=feature_dim,
+        num_classes=num_classes,
+        images_per_class=5,
+        device=device,
+        distill_epochs=3,
+        inner_epochs=2,
+        expert_epochs=3,
+        seed=42
+    )
+
+    # Distill using train data with pseudo labels
+    print("  1. Distilling from train data with pseudo labels...")
+    synth_features, synth_labels = distiller.distill(train_features, train_pseudo_labels, verbose=False)
+    print(f"     ✓ Created {len(synth_features)} synthetic samples")
+
+    # Evaluate on SEPARATE test set with TRUE labels
+    print("  2. Evaluating on held-out test set with TRUE labels...")
+    results = distiller.evaluate_distilled_data(
+        real_features=train_features,
+        pseudo_labels=train_pseudo_labels,
+        test_features=test_features,
+        test_labels=test_true_labels,
+        num_trials=2,
+        train_epochs=5
+    )
+    
+    # Verify results structure
+    assert 'distilled_test_acc' in results, "Missing distilled_test_acc"
+    assert 'real_test_acc' in results, "Missing real_test_acc"
+    assert 'performance_ratio' in results, "Missing performance_ratio"
+    assert 'distilled_test_std' in results, "Missing distilled_test_std"
+    assert 'real_test_std' in results, "Missing real_test_std"
+    
+    # Verify no train accuracy (would indicate data leakage)
+    assert 'distilled_train_acc' not in results, "Found train_acc - potential data leakage!"
+    assert 'real_train_acc' not in results, "Found train_acc - potential data leakage!"
+    
+    print(f"     ✓ Distilled test acc: {results['distilled_test_acc']:.4f} ± {results['distilled_test_std']:.4f}")
+    print(f"     ✓ Real test acc: {results['real_test_acc']:.4f} ± {results['real_test_std']:.4f}")
+    print(f"     ✓ Performance ratio: {results['performance_ratio']:.4f}")
+    
+    # Sanity check: distilled accuracy should be reasonable (not >100% or negative)
+    assert 0.0 <= results['distilled_test_acc'] <= 1.0, "Distilled accuracy out of range"
+    assert 0.0 <= results['real_test_acc'] <= 1.0, "Real accuracy out of range"
+    
+    print("  3. Verifying no data leakage...")
+    print("     ✓ No train accuracy metrics (good - prevents confusion)")
+    print("     ✓ Evaluation uses separate test set with TRUE labels")
+    print("     ✓ Models trained on pseudo labels, tested on true labels")
+    
+    print("✓ Evaluation without data leakage test PASSED")
+
+
 def run_all_tests():
     """Run all tests and report results."""
     tests = [
@@ -556,6 +649,7 @@ def run_all_tests():
         test_selection_strategies,
         test_integration_with_pseudo_labeling,
         test_robustness_edge_cases,
+        test_evaluation_no_data_leakage,  # NEW: Test proper evaluation
     ]
 
     print("\n" + "="*80)

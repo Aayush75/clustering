@@ -756,28 +756,29 @@ def main():
         
         # Evaluate distilled data if requested
         if args.evaluate_distilled:
-            print("\nEvaluating distilled data...")
-            eval_results = distiller.evaluate_distilled_data(
-                real_features=train_features,
-                pseudo_labels=train_pseudo_labels,
-                test_features=test_features,
-                test_labels=test_labels if test_labels is not None else None,
-                num_trials=5
-            )
-            
-            # Print evaluation results
-            print("\n" + "="*60)
-            print("Distillation Evaluation Results")
-            print("="*60)
-            print(f"Distilled train accuracy: {eval_results['distilled_train_acc']:.4f} ± {eval_results['distilled_train_std']:.4f}")
-            print(f"Real train accuracy: {eval_results['real_train_acc']:.4f} ± {eval_results['real_train_std']:.4f}")
-            if 'distilled_test_acc' in eval_results:
+            if test_labels is None:
+                print("\nWarning: Cannot evaluate distilled data - test labels not available")
+            else:
+                print("\nEvaluating distilled data...")
+                eval_results = distiller.evaluate_distilled_data(
+                    real_features=train_features,
+                    pseudo_labels=train_pseudo_labels,
+                    test_features=test_features,
+                    test_labels=test_labels,
+                    num_trials=5
+                )
+                
+                # Print evaluation results
+                print("\n" + "="*60)
+                print("Distillation Evaluation Results")
+                print("="*60)
                 print(f"Distilled test accuracy: {eval_results['distilled_test_acc']:.4f} ± {eval_results['distilled_test_std']:.4f}")
                 print(f"Real test accuracy: {eval_results['real_test_acc']:.4f} ± {eval_results['real_test_std']:.4f}")
                 print(f"Performance ratio: {eval_results['performance_ratio']:.4f}")
-            print(f"Compression ratio: {eval_results['compression_ratio']:.4f}")
-            print(f"Eval synth size: {eval_results['eval_synth_size']}")
-            print(f"Real data size: {eval_results['real_data_size']}")
+                print(f"Compression ratio: {eval_results['compression_ratio']:.4f}")
+                print(f"Eval synth size: {eval_results['eval_synth_size']}")
+                print(f"Real data size: {eval_results['real_data_size']}")
+                print("="*60)
             print("="*60)
             
             # Save evaluation results

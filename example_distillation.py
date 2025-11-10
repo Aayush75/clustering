@@ -179,13 +179,22 @@ def main():
     print("Step 5: Evaluation")
     print("="*80)
     
+    # Create a test set for proper evaluation (normally you'd have this from data loading)
+    print("  Creating test set for evaluation...")
+    test_features = torch.randn(200, feature_dim, device=device)
+    test_labels = torch.randint(0, args.num_clusters, (200,), device=device)
+    
     results = distiller.evaluate_distilled_data(
         real_features=train_features,
         pseudo_labels=pseudo_labels,
-        test_features=None,
-        test_labels=None,
+        test_features=test_features,
+        test_labels=test_labels,
         num_trials=3
     )
+    
+    print(f"\n  Distilled test accuracy: {results['distilled_test_acc']:.4f} ± {results['distilled_test_std']:.4f}")
+    print(f"  Real test accuracy: {results['real_test_acc']:.4f} ± {results['real_test_std']:.4f}")
+    print(f"  Performance ratio: {results['performance_ratio']:.4f}")
     
     # Save distilled dataset
     output_dir = Path('./results/distillation_example')
