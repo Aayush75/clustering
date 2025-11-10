@@ -24,6 +24,7 @@ from tqdm import tqdm
 import math
 import copy
 import random
+from .evaluation import cluster_accuracy
 
 
 # ----------------------------- Utility Models ---------------------------------
@@ -477,7 +478,8 @@ class DatasetDistiller:
             with torch.no_grad():
                 test_out = distilled_model(test_features)
                 test_pred = torch.argmax(test_out, dim=1)
-                test_acc = (test_pred == test_labels).float().mean().item()
+                # Use Hungarian matching to align pseudo labels with true labels
+                test_acc = cluster_accuracy(test_labels, test_pred)
                 results['distilled_test_acc'].append(test_acc)
 
             # ===== Train model on REAL data (baseline, with pseudo labels) =====
@@ -502,7 +504,8 @@ class DatasetDistiller:
             with torch.no_grad():
                 test_out = real_model(test_features)
                 test_pred = torch.argmax(test_out, dim=1)
-                test_acc = (test_pred == test_labels).float().mean().item()
+                # Use Hungarian matching to align pseudo labels with true labels
+                test_acc = cluster_accuracy(test_labels, test_pred)
                 results['real_test_acc'].append(test_acc)
 
         # Aggregate results - only test accuracy matters
