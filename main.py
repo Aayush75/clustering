@@ -748,6 +748,9 @@ def main():
             verbose=True
         )
         
+        # Set the cluster-to-label mapping for evaluation
+        distiller.set_cluster_mapping(train_cluster_to_label)
+        
         # Save distilled data
         distilled_dir = experiment_dir / "distilled_data"
         distilled_dir.mkdir(exist_ok=True)
@@ -765,7 +768,9 @@ def main():
                     pseudo_labels=train_pseudo_labels,
                     test_features=test_features,
                     test_labels=test_labels,
-                    num_trials=5
+                    cluster_to_label=train_cluster_to_label,  # Use fixed mapping from pseudo-labeling
+                    num_trials=5,
+                    include_supervised_baseline=False  # Can be enabled if ground truth train labels available
                 )
                 
                 # Print evaluation results
@@ -773,11 +778,16 @@ def main():
                 print("Distillation Evaluation Results")
                 print("="*60)
                 print(f"Distilled test accuracy: {eval_results['distilled_test_acc']:.4f} ± {eval_results['distilled_test_std']:.4f}")
-                print(f"Real test accuracy: {eval_results['real_test_acc']:.4f} ± {eval_results['real_test_std']:.4f}")
+                print(f"Real pseudo test accuracy: {eval_results['real_pseudo_test_acc']:.4f} ± {eval_results['real_pseudo_test_std']:.4f}")
                 print(f"Performance ratio: {eval_results['performance_ratio']:.4f}")
                 print(f"Compression ratio: {eval_results['compression_ratio']:.4f}")
                 print(f"Eval synth size: {eval_results['eval_synth_size']}")
                 print(f"Real data size: {eval_results['real_data_size']}")
+                if 'supervised_test_acc' in eval_results:
+                    print(f"Supervised test accuracy: {eval_results['supervised_test_acc']:.4f} ± {eval_results['supervised_test_std']:.4f}")
+                    print(f"Clustering penalty: {eval_results.get('clustering_penalty', 0):.4f}")
+                    print(f"Distillation penalty: {eval_results.get('distillation_penalty', 0):.4f}")
+                    print(f"Total penalty: {eval_results.get('total_penalty', 0):.4f}")
                 print("="*60)
             print("="*60)
             
