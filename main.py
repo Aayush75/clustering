@@ -30,6 +30,7 @@ from src.evaluation import (
 from src.visualization import visualize_clustering_results
 from src.pseudo_labeling import (
     generate_pseudo_labels,
+    apply_pseudo_labels,
     print_cluster_mapping_summary,
     visualize_cluster_mapping,
     map_clusters_to_labels
@@ -556,26 +557,17 @@ def generate_and_save_pseudo_labels(
         confidence_scores=train_confidence
     )
     
-    # Generate pseudo labels for test set
-    print("\n>>> Test Set <<<")
-    test_pseudo_labels, test_cluster_to_label, test_k_nearest, test_confidence, test_cluster_confidence = generate_pseudo_labels(
-        features=test_features,
-        cluster_assignments=test_predictions,
-        true_labels=test_labels,
-        cluster_centers=clusterer.cluster_centers,
-        k=args.k_samples,
-        verbose=True,
-        return_confidence=True
-    )
+    # Apply TRAINING cluster mapping to test set (NO data leakage)
+    print("\n>>> Test Set (using training cluster-to-label mapping) <<<")
+    test_pseudo_labels = apply_pseudo_labels(test_predictions, train_cluster_to_label)
     
-    print_cluster_mapping_summary(
-        test_cluster_to_label,
-        test_predictions,
-        test_labels,
-        class_names,
-        cluster_to_confidence=test_cluster_confidence,
-        confidence_scores=test_confidence
-    )
+    # Compute test accuracy using training mapping
+    test_accuracy = (test_pseudo_labels == test_labels).float().mean().item() * 100
+    print(f"Test pseudo-label accuracy (with training mapping): {test_accuracy:.2f}%")
+    print(f"Using cluster-to-label mapping from training set (no test label leakage)")
+    
+    # Note: We don't create a separate test_cluster_to_label mapping
+    # to avoid any data leakage. The training mapping is used for distillation.
     
     # Save pseudo labels (convert to numpy/list only for JSON serialization)
     pseudo_labels_dir = experiment_dir / "pseudo_labels"
@@ -589,10 +581,8 @@ def generate_and_save_pseudo_labels(
         'train_confidence_scores': train_confidence.cpu().tolist() if isinstance(train_confidence, torch.Tensor) else train_confidence.tolist() if train_confidence is not None else None,
         'train_k_nearest_indices': {int(k): (v.cpu().tolist() if isinstance(v, torch.Tensor) else v.tolist()) for k, v in train_k_nearest.items()},
         'test_pseudo_labels': test_pseudo_labels.cpu().tolist() if isinstance(test_pseudo_labels, torch.Tensor) else test_pseudo_labels.tolist(),
-        'test_cluster_to_label': {int(k): int(v) for k, v in test_cluster_to_label.items()},
-        'test_cluster_to_confidence': {int(k): float(v) for k, v in test_cluster_confidence.items()},
-        'test_confidence_scores': test_confidence.cpu().tolist() if isinstance(test_confidence, torch.Tensor) else test_confidence.tolist() if test_confidence is not None else None,
-        'test_k_nearest_indices': {int(k): (v.cpu().tolist() if isinstance(v, torch.Tensor) else v.tolist()) for k, v in test_k_nearest.items()}
+        # Note: test set uses the same cluster_to_label mapping as training (no separate mapping to avoid data leakage)
+        'note': 'Test pseudo labels generated using training cluster-to-label mapping to prevent data leakage'
     }
     
     results_path = pseudo_labels_dir / f"pseudo_labels_k{args.k_samples}.json"
