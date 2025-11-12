@@ -24,7 +24,6 @@ from tqdm import tqdm
 import math
 import copy
 import random
-from .evaluation import cluster_accuracy
 
 
 # ----------------------------- Utility Models ---------------------------------
@@ -406,9 +405,28 @@ class DatasetDistiller:
         test_features = test_features.to(self.device)
         test_labels = test_labels.to(self.device)
 
+        # Sanity checks to catch accidental passing of pseudo-labels as test labels
+        if test_features.shape[0] != test_labels.shape[0]:
+            raise ValueError(
+                f"test_features and test_labels length mismatch: "
+                f"{test_features.shape[0]} vs {test_labels.shape[0]}"
+            )
+        
+        # test_labels must be integer class ids in [0, num_classes)
+        if test_labels.dtype not in (torch.int64, torch.long):
+            test_labels = test_labels.long()
+        
+        if test_labels.min().item() < 0 or test_labels.max().item() >= self.num_classes:
+            raise ValueError(
+                f"test_labels contains values outside expected class range [0, {self.num_classes}). "
+                f"Got range [{test_labels.min().item()}, {test_labels.max().item()}]. "
+                f"Are you passing pseudo-labels from clustering by mistake? "
+                f"test_labels must be ground-truth labels from the dataset."
+            )
+
         # Validate percentage
         if not 0.0 < labeled_data_percentage <= 1.0:
-            raise ValueError(f"labeled_data_percentage must be in (0, 1], got {labeled_data_percentage}")
+            raise ValueError(f"labeled_data_percentage must be in (0.0, 1.0], got {labeled_data_percentage}")
 
         results = {
             'distilled_test_acc': [],
@@ -478,8 +496,8 @@ class DatasetDistiller:
             with torch.no_grad():
                 test_out = distilled_model(test_features)
                 test_pred = torch.argmax(test_out, dim=1)
-                # Use Hungarian matching to align pseudo labels with true labels
-                test_acc = cluster_accuracy(test_labels, test_pred)
+                # Direct accuracy comparison (model trained on pseudo-labels which are true labels)
+                test_acc = (test_pred == test_labels).float().mean().item()
                 results['distilled_test_acc'].append(test_acc)
 
             # ===== Train model on REAL data (baseline, with pseudo labels) =====
@@ -504,8 +522,8 @@ class DatasetDistiller:
             with torch.no_grad():
                 test_out = real_model(test_features)
                 test_pred = torch.argmax(test_out, dim=1)
-                # Use Hungarian matching to align pseudo labels with true labels
-                test_acc = cluster_accuracy(test_labels, test_pred)
+                # Direct accuracy comparison (model trained on pseudo-labels which are true labels)
+                test_acc = (test_pred == test_labels).float().mean().item()
                 results['real_test_acc'].append(test_acc)
 
         # Aggregate results - only test accuracy matters
