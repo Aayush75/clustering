@@ -169,9 +169,6 @@ def main():
         verbose=True
     )
     
-    # Set the cluster-to-label mapping for evaluation
-    distiller.set_cluster_mapping(cluster_to_label)
-    
     print(f"\nDistilled dataset created:")
     print(f"  Original size: {len(train_features)} samples")
     print(f"  Distilled size: {len(synthesized_features)} samples")
@@ -192,13 +189,11 @@ def main():
         pseudo_labels=pseudo_labels,
         test_features=test_features,
         test_labels=test_labels,
-        cluster_to_label=cluster_to_label,  # Pass the mapping from pseudo-labeling
-        num_trials=3,
-        include_supervised_baseline=False  # Set to True if you have ground truth train labels
+        num_trials=3
     )
     
     print(f"\n  Distilled test accuracy: {results['distilled_test_acc']:.4f} ± {results['distilled_test_std']:.4f}")
-    print(f"  Real pseudo test accuracy: {results['real_pseudo_test_acc']:.4f} ± {results['real_pseudo_test_std']:.4f}")
+    print(f"  Real test accuracy: {results['real_test_acc']:.4f} ± {results['real_test_std']:.4f}")
     print(f"  Performance ratio: {results['performance_ratio']:.4f}")
     
     # Save distilled dataset
@@ -216,9 +211,9 @@ def main():
     print(f"  - Original dataset: {len(train_features)} samples")
     print(f"  - Distilled dataset: {len(synthesized_features)} samples")
     print(f"  - Compression: {len(synthesized_features)/len(train_features):.2%}")
-    print(f"  - Test accuracy (distilled): {results['distilled_test_acc']:.4f}")
-    print(f"  - Test accuracy (real): {results['real_pseudo_test_acc']:.4f}")
-    print(f"  - Performance ratio: {results['performance_ratio']:.4f}")
+    print(f"  - Train accuracy (distilled): {results['distilled_train_acc']:.4f}")
+    print(f"  - Train accuracy (real): {results['real_train_acc']:.4f}")
+    print(f"  - Performance ratio: {results['distilled_train_acc']/results['real_train_acc']:.4f}")
     print("="*80)
 
 

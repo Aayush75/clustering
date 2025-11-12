@@ -19,16 +19,9 @@ def cluster_accuracy(y_true: Union[torch.Tensor, list], y_pred: Union[torch.Tens
     """
     Calculate clustering accuracy using the Hungarian algorithm.
     
-    WARNING: This function should ONLY be used during the initial clustering phase
-    to discover the optimal cluster-to-label mapping. It should NOT be used for
-    evaluating distilled datasets or in deployment scenarios where the cluster-to-label
-    mapping is already established.
-    
-    For evaluation with a fixed cluster-to-label mapping, use fixed_mapping_accuracy() instead.
-    
-    Since cluster labels are arbitrary during clustering, we need to find the best matching
-    between predicted cluster labels and true class labels. This is done using the
-    Hungarian algorithm for optimal assignment.
+    Since cluster labels are arbitrary, we need to find the best matching
+    between predicted cluster labels and true class labels. This is done
+    using the Hungarian algorithm for optimal assignment.
     
     Args:
         y_true: Ground truth labels (num_samples,) - torch.Tensor or list
@@ -65,83 +58,6 @@ def cluster_accuracy(y_true: Union[torch.Tensor, list], y_pred: Union[torch.Tens
     # Calculate accuracy based on optimal assignment
     total_correct = conf_matrix[row_indices, col_indices].sum()
     accuracy = total_correct / y_true.shape[0]
-    
-    return accuracy
-
-
-def fixed_mapping_accuracy(
-    y_true: Union[torch.Tensor, list],
-    y_pred: Union[torch.Tensor, list],
-    cluster_to_label: Dict[int, int]
-) -> float:
-    """
-    Calculate accuracy using a FIXED cluster-to-label mapping.
-    
-    This function should be used when evaluating distilled datasets or in deployment
-    scenarios where the cluster-to-label mapping has already been established during
-    the clustering/pseudo-labeling phase.
-    
-    Unlike cluster_accuracy() which uses Hungarian matching to find the optimal
-    post-hoc alignment, this function respects the learned mapping from the training
-    phase, which is critical for:
-    1. Realistic evaluation that reflects deployment performance
-    2. Proper assessment of dataset distillation quality
-    3. Avoiding artificially inflated performance metrics
-    
-    Args:
-        y_true: Ground truth labels (num_samples,) - torch.Tensor or list
-        y_pred: Predicted cluster IDs (num_samples,) - torch.Tensor or list
-        cluster_to_label: Dictionary mapping cluster_id -> label (from clustering phase)
-        
-    Returns:
-        Accuracy score between 0 and 1 based on the fixed mapping
-        
-    Example:
-        # During clustering, we establish: cluster_0 -> label_1, cluster_1 -> label_2
-        cluster_to_label = {0: 1, 1: 2, 2: 0}
-        
-        # Model predicts cluster IDs: [0, 1, 2, 0, 1]
-        predictions = torch.tensor([0, 1, 2, 0, 1])
-        
-        # Map to labels using the fixed mapping: [1, 2, 0, 1, 2]
-        # Compare with true labels: [1, 2, 1, 1, 2]
-        # Accuracy: 4/5 = 0.8
-        true_labels = torch.tensor([1, 2, 1, 1, 2])
-        acc = fixed_mapping_accuracy(true_labels, predictions, cluster_to_label)
-    """
-    # Convert to tensors if needed
-    if not isinstance(y_true, torch.Tensor):
-        y_true = torch.tensor(y_true)
-    if not isinstance(y_pred, torch.Tensor):
-        y_pred = torch.tensor(y_pred)
-    
-    # Ensure int64 dtype
-    y_true = y_true.to(dtype=torch.int64)
-    y_pred = y_pred.to(dtype=torch.int64)
-    
-    # Check that arrays have the same length
-    assert y_true.shape[0] == y_pred.shape[0], "Input arrays must have same length"
-    
-    device = y_pred.device
-    
-    # Map predicted cluster IDs to labels using the fixed mapping
-    mapped_predictions = torch.full_like(y_pred, -1, dtype=torch.int64, device=device)
-    
-    for cluster_id, label in cluster_to_label.items():
-        mask = y_pred == cluster_id
-        mapped_predictions[mask] = label
-    
-    # Filter out samples with unmapped clusters (cluster_id not in mapping)
-    valid_mask = mapped_predictions != -1
-    
-    if not torch.any(valid_mask):
-        # No valid predictions
-        return 0.0
-    
-    # Calculate accuracy on valid samples
-    correct = (mapped_predictions[valid_mask] == y_true[valid_mask]).sum().item()
-    total = valid_mask.sum().item()
-    accuracy = correct / total if total > 0 else 0.0
     
     return accuracy
 

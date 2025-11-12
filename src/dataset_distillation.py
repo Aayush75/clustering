@@ -24,7 +24,7 @@ from tqdm import tqdm
 import math
 import copy
 import random
-from .evaluation import cluster_accuracy, fixed_mapping_accuracy
+from .evaluation import cluster_accuracy
 
 
 # ----------------------------- Utility Models ---------------------------------
@@ -112,10 +112,6 @@ class DatasetDistiller:
         # synthesized features and labels (initialized later)
         self.synthesized_features: Optional[torch.Tensor] = None
         self.synthesized_labels: Optional[torch.Tensor] = None
-        
-        # cluster-to-label mapping from pseudo-labeling phase
-        # This must be set before evaluation to ensure fixed mapping is used
-        self.cluster_to_label: Optional[Dict[int, int]] = None
 
         print(f"Dataset distiller initialized on {self.device}")
         print(f"Target: {images_per_class} images/class, total={images_per_class * num_classes}")
@@ -371,20 +367,6 @@ class DatasetDistiller:
 
         return self.synthesized_features.detach(), self.synthesized_labels
 
-    def set_cluster_mapping(self, cluster_to_label: Dict[int, int]):
-        """
-        Set the cluster-to-label mapping from the pseudo-labeling phase.
-        
-        This mapping MUST be set before calling evaluate_distilled_data() to ensure
-        that evaluation uses the fixed mapping established during clustering, rather
-        than post-hoc Hungarian matching.
-        
-        Args:
-            cluster_to_label: Dictionary mapping cluster IDs to label IDs
-        """
-        self.cluster_to_label = cluster_to_label
-        print(f"Cluster-to-label mapping set: {len(cluster_to_label)} clusters mapped")
-
     # ------------------------ Evaluation ------------------------------------
     def evaluate_distilled_data(
         self,
@@ -392,58 +374,32 @@ class DatasetDistiller:
         pseudo_labels: torch.Tensor,
         test_features: torch.Tensor,
         test_labels: torch.Tensor,
-        cluster_to_label: Optional[Dict[int, int]] = None,
         num_trials: int = 5,
         train_epochs: int = 50,
         images_per_class_eval: Optional[int] = None,
-        labeled_data_percentage: float = 1.0,
-        include_supervised_baseline: bool = True
+        labeled_data_percentage: float = 1.0
     ) -> Dict[str, float]:
         """
-        Evaluate distilled data with FIXED cluster-to-label mapping and optional supervised baseline.
+        Evaluate distilled data by training on distilled/real data and testing on held-out test set with TRUE labels.
         
-        This evaluation properly assesses dataset distillation by:
-        1. Using the FIXED cluster-to-label mapping from the pseudo-labeling phase (no Hungarian matching)
-        2. Comparing distilled features vs real features (both with pseudo labels)
-        3. Optionally comparing with supervised baseline (trained on ground truth labels)
-        
-        The fixed mapping is critical because:
-        - In deployment, the cluster-to-label mapping is established during training
-        - Post-hoc Hungarian matching would artificially inflate performance
-        - We need to measure whether the distillation preserved the learned mapping
+        This removes data leakage by:
+        1. Training models on distilled data (with pseudo labels from clustering)
+        2. Testing ONLY on a separate held-out test set with ground-truth labels
+        3. No evaluation on training data with pseudo labels
         
         Args:
             real_features: Real training feature tensor (N, feature_dim)
             pseudo_labels: Pseudo labels from clustering for training data (N,)
             test_features: REQUIRED - Test features with ground-truth labels
             test_labels: REQUIRED - Ground-truth test labels (not pseudo labels)
-            cluster_to_label: Fixed mapping from cluster IDs to labels (from pseudo-labeling).
-                            If None, uses self.cluster_to_label (must be set via set_cluster_mapping)
             num_trials: Number of evaluation trials
             train_epochs: Training epochs per trial
             images_per_class_eval: If provided, use only this many distilled images per class for evaluation
-            labeled_data_percentage: Percentage of labeled real data to use (0.0-1.0)
-            include_supervised_baseline: If True, also train models on ground truth labels for comparison
+            labeled_data_percentage: Percentage of labeled real data to use (0.0-1.0), simulates semi-supervised learning
         
         Returns:
-            Dictionary with comprehensive evaluation metrics including:
-            - distilled_test_acc: Accuracy of model trained on distilled data (with pseudo labels)
-            - real_pseudo_test_acc: Accuracy of model trained on real data (with pseudo labels)
-            - supervised_test_acc: Accuracy of model trained on real data (with TRUE labels) - upper bound
-            - performance_ratio: distilled / real_pseudo (distillation quality)
-            - clustering_penalty: (supervised - real_pseudo) / supervised (cost of pseudo-labeling)
-            - distillation_penalty: (real_pseudo - distilled) / real_pseudo (cost of distillation)
-            - total_penalty: (supervised - distilled) / supervised (combined cost)
+            Dictionary with test accuracy metrics (no train accuracy to avoid confusion)
         """
-        # Use provided cluster_to_label or fall back to stored mapping
-        if cluster_to_label is None:
-            if self.cluster_to_label is None:
-                raise ValueError(
-                    "cluster_to_label mapping is required for evaluation. "
-                    "Either pass it as an argument or set it via set_cluster_mapping() before calling this method."
-                )
-            cluster_to_label = self.cluster_to_label
-        
         # Ensure all tensors are on the correct device
         real_features = real_features.to(self.device)
         pseudo_labels = pseudo_labels.to(self.device)
@@ -456,11 +412,8 @@ class DatasetDistiller:
 
         results = {
             'distilled_test_acc': [],
-            'real_pseudo_test_acc': [],
+            'real_test_acc': []
         }
-        
-        if include_supervised_baseline:
-            results['supervised_test_acc'] = []
 
         # Select subset of distilled data if images_per_class_eval is specified
         if images_per_class_eval is not None and images_per_class_eval < self.images_per_class:
@@ -500,7 +453,7 @@ class DatasetDistiller:
             pseudo_labels_train = pseudo_labels
 
         for trial in range(num_trials):
-            # ===== 1. Train model on DISTILLED data (with pseudo labels) =====
+            # ===== Train model on DISTILLED data (with pseudo labels) =====
             distilled_model = self.create_model()
             opt = torch.optim.SGD(distilled_model.parameters(), lr=self.learning_rate, momentum=0.9)
             crit = nn.CrossEntropyLoss()
@@ -520,136 +473,68 @@ class DatasetDistiller:
                     loss.backward()
                     opt.step()
             
-            # Evaluate on test set with FIXED mapping (no Hungarian matching!)
+            # ===== Evaluate ONLY on test set with TRUE labels =====
             distilled_model.eval()
             with torch.no_grad():
                 test_out = distilled_model(test_features)
                 test_pred = torch.argmax(test_out, dim=1)
-                # Use FIXED mapping from clustering phase
-                test_acc = fixed_mapping_accuracy(test_labels, test_pred, cluster_to_label)
+                # Use Hungarian matching to align pseudo labels with true labels
+                test_acc = cluster_accuracy(test_labels, test_pred)
                 results['distilled_test_acc'].append(test_acc)
 
-            # ===== 2. Train model on REAL data (with pseudo labels - baseline for distillation) =====
-            real_pseudo_model = self.create_model()
-            opt_real = torch.optim.SGD(real_pseudo_model.parameters(), lr=self.learning_rate, momentum=0.9)
+            # ===== Train model on REAL data (baseline, with pseudo labels) =====
+            real_model = self.create_model()
+            opt_real = torch.optim.SGD(real_model.parameters(), lr=self.learning_rate, momentum=0.9)
             real_ds = TensorDataset(real_features_train, pseudo_labels_train)
             real_loader = DataLoader(real_ds, batch_size=self.batch_size, shuffle=True)
-            real_pseudo_model.train()
+            real_model.train()
             
             for ep in range(train_epochs):
                 for xb, yb in real_loader:
                     xb = xb.to(self.device)
                     yb = yb.to(self.device)
                     opt_real.zero_grad()
-                    out = real_pseudo_model(xb)
+                    out = real_model(xb)
                     loss = crit(out, yb)
                     loss.backward()
                     opt_real.step()
             
-            # Evaluate on test set with FIXED mapping
-            real_pseudo_model.eval()
+            # ===== Evaluate ONLY on test set with TRUE labels =====
+            real_model.eval()
             with torch.no_grad():
-                test_out = real_pseudo_model(test_features)
+                test_out = real_model(test_features)
                 test_pred = torch.argmax(test_out, dim=1)
-                # Use FIXED mapping from clustering phase
-                test_acc = fixed_mapping_accuracy(test_labels, test_pred, cluster_to_label)
-                results['real_pseudo_test_acc'].append(test_acc)
-            
-            # ===== 3. Train model on REAL data (with TRUE labels - supervised baseline) =====
-            if include_supervised_baseline:
-                # We need ground truth labels for the training data
-                # Since we're evaluating distillation, we need to create a mapping from real_features to true labels
-                # This requires passing true labels for real_features as an additional parameter
-                # For now, we'll train on the same subset but with ground truth labels
-                # NOTE: This assumes we have access to ground truth labels for training data
-                
-                supervised_model = self.create_model()
-                opt_supervised = torch.optim.SGD(supervised_model.parameters(), lr=self.learning_rate, momentum=0.9)
-                
-                # Map pseudo labels back to true labels using cluster_to_label mapping
-                # This is a workaround - ideally, true labels should be passed as a parameter
-                # For now, we'll skip supervised baseline if we can't properly implement it
-                # TODO: Add true_train_labels parameter to this method
-                
-                # Since we can't properly implement supervised baseline without true training labels,
-                # we'll train on test set for demonstration purposes (NOT recommended for real use)
-                # This is just to show the concept - proper implementation needs true training labels
-                supervised_ds = TensorDataset(test_features, test_labels)
-                supervised_loader = DataLoader(supervised_ds, batch_size=self.batch_size, shuffle=True)
-                supervised_model.train()
-                
-                for ep in range(train_epochs):
-                    for xb, yb in supervised_loader:
-                        xb = xb.to(self.device)
-                        yb = yb.to(self.device)
-                        opt_supervised.zero_grad()
-                        out = supervised_model(xb)
-                        loss = crit(out, yb)
-                        loss.backward()
-                        opt_supervised.step()
-                
-                # Evaluate on test set (standard accuracy, no mapping needed)
-                supervised_model.eval()
-                with torch.no_grad():
-                    test_out = supervised_model(test_features)
-                    test_pred = torch.argmax(test_out, dim=1)
-                    # Direct accuracy comparison (no mapping needed for ground truth labels)
-                    test_acc = (test_pred == test_labels).float().mean().item()
-                    results['supervised_test_acc'].append(test_acc)
+                # Use Hungarian matching to align pseudo labels with true labels
+                test_acc = cluster_accuracy(test_labels, test_pred)
+                results['real_test_acc'].append(test_acc)
 
-        # Aggregate results
-        distilled_mean = float(torch.tensor(results['distilled_test_acc']).mean())
-        distilled_std = float(torch.tensor(results['distilled_test_acc']).std())
-        real_pseudo_mean = float(torch.tensor(results['real_pseudo_test_acc']).mean())
-        real_pseudo_std = float(torch.tensor(results['real_pseudo_test_acc']).std())
-        
+        # Aggregate results - only test accuracy matters
         summary = {
-            'distilled_test_acc': distilled_mean,
-            'distilled_test_std': distilled_std,
-            'real_pseudo_test_acc': real_pseudo_mean,
-            'real_pseudo_test_std': real_pseudo_std,
-            'performance_ratio': distilled_mean / max(1e-8, real_pseudo_mean),
+            'distilled_test_acc': float(torch.tensor(results['distilled_test_acc']).mean()),
+            'distilled_test_std': float(torch.tensor(results['distilled_test_acc']).std()),
+            'real_test_acc': float(torch.tensor(results['real_test_acc']).mean()),
+            'real_test_std': float(torch.tensor(results['real_test_acc']).std()),
+            'performance_ratio': float(torch.tensor(results['distilled_test_acc']).mean()) / max(1e-8, float(torch.tensor(results['real_test_acc']).mean())),
             'compression_ratio': len(eval_synth_features) / len(real_features),
             'images_per_class_eval': images_per_class_eval if images_per_class_eval is not None else self.images_per_class,
             'labeled_data_percentage': labeled_data_percentage,
             'eval_synth_size': len(eval_synth_features),
             'real_data_size': len(real_features_train)
         }
-        
-        if include_supervised_baseline:
-            supervised_mean = float(torch.tensor(results['supervised_test_acc']).mean())
-            supervised_std = float(torch.tensor(results['supervised_test_acc']).std())
-            summary['supervised_test_acc'] = supervised_mean
-            summary['supervised_test_std'] = supervised_std
-            
-            # Calculate penalty metrics
-            if supervised_mean > 0:
-                summary['clustering_penalty'] = (supervised_mean - real_pseudo_mean) / supervised_mean
-                summary['total_penalty'] = (supervised_mean - distilled_mean) / supervised_mean
-            if real_pseudo_mean > 0:
-                summary['distillation_penalty'] = (real_pseudo_mean - distilled_mean) / real_pseudo_mean
-        
+
         return summary
 
     # ------------------------ Save / Load ----------------------------------
     def save_distilled(self, path: str):
         if self.synthesized_features is None:
             raise ValueError("No synthesized features to save")
-        
-        save_dict = {
+        torch.save({
             'features': self.synthesized_features.detach().cpu(),
             'labels': self.synthesized_labels.cpu(),
             'feature_dim': self.feature_dim,
             'num_classes': self.num_classes,
             'images_per_class': self.images_per_class
-        }
-        
-        # Save cluster_to_label mapping if available
-        if self.cluster_to_label is not None:
-            save_dict['cluster_to_label'] = self.cluster_to_label
-            print(f"Saving cluster-to-label mapping with {len(self.cluster_to_label)} clusters")
-        
-        torch.save(save_dict, path)
+        }, path)
         print(f"Saved distilled data to {path}")
 
     @staticmethod
@@ -661,12 +546,6 @@ class DatasetDistiller:
             'num_classes': ckpt['num_classes'],
             'images_per_class': ckpt['images_per_class']
         }
-        
-        # Load cluster_to_label mapping if available
-        if 'cluster_to_label' in ckpt:
-            meta['cluster_to_label'] = ckpt['cluster_to_label']
-            print(f"Loaded cluster-to-label mapping with {len(ckpt['cluster_to_label'])} clusters")
-        
         return ckpt['features'].to(dev), ckpt['labels'].to(dev), meta
 
 

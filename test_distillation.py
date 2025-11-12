@@ -241,10 +241,6 @@ def test_complete_distillation_pipeline():
     assert synth_labels.shape[0] == num_classes * 5
     print(f"     ✓ Distilled {synth_features.shape[0]} samples")
 
-    # Create a simple cluster-to-label mapping (identity mapping for testing)
-    cluster_to_label = {i: i for i in range(num_classes)}
-    distiller.set_cluster_mapping(cluster_to_label)
-
     # Step 2: Save
     print("  2. Saving distilled data...")
     with tempfile.NamedTemporaryFile(suffix='.pt', delete=False) as f:
@@ -263,10 +259,9 @@ def test_complete_distillation_pipeline():
         assert loaded_labels.shape == synth_labels.shape
         assert meta['feature_dim'] == feature_dim
         assert meta['num_classes'] == num_classes
-        assert 'cluster_to_label' in meta, "cluster_to_label mapping should be saved"
-        print("     ✓ Loaded successfully with cluster mapping")
+        print("     ✓ Loaded successfully")
         
-        # Step 4: Evaluate (now requires test data and cluster mapping)
+        # Step 4: Evaluate (now requires test data)
         print("  4. Evaluating distilled data...")
         
         # Create separate test set with TRUE labels for proper evaluation
@@ -278,18 +273,16 @@ def test_complete_distillation_pipeline():
             pseudo_labels=labels,
             test_features=test_features,
             test_labels=test_labels,
-            cluster_to_label=cluster_to_label,  # Use fixed mapping
             num_trials=2,
-            train_epochs=10,
-            include_supervised_baseline=False
+            train_epochs=10
         )
         
         assert 'distilled_test_acc' in results
-        assert 'real_pseudo_test_acc' in results
+        assert 'real_test_acc' in results
         assert 'compression_ratio' in results
         assert 'performance_ratio' in results
         print(f"     ✓ Distilled test acc: {results['distilled_test_acc']:.4f}")
-        print(f"     ✓ Real pseudo test acc: {results['real_pseudo_test_acc']:.4f}")
+        print(f"     ✓ Real test acc: {results['real_test_acc']:.4f}")
         print(f"     ✓ Performance ratio: {results['performance_ratio']:.4f}")
         print(f"     ✓ Compression ratio: {results['compression_ratio']:.4f}")
         
@@ -326,10 +319,6 @@ def test_evaluation_with_options():
     # Distill
     synth_features, synth_labels = distiller.distill(features, labels, verbose=False)
     
-    # Create a simple cluster-to-label mapping (identity mapping for testing)
-    cluster_to_label = {i: i for i in range(num_classes)}
-    distiller.set_cluster_mapping(cluster_to_label)
-    
     # Create test set for evaluation
     test_features = torch.randn(30, feature_dim, device=device)
     test_labels = torch.randint(0, num_classes, (30,), device=device)
@@ -341,11 +330,9 @@ def test_evaluation_with_options():
         pseudo_labels=labels,
         test_features=test_features,
         test_labels=test_labels,
-        cluster_to_label=cluster_to_label,
         num_trials=2,
         train_epochs=5,
-        images_per_class_eval=5,  # Use only 5 images per class
-        include_supervised_baseline=False
+        images_per_class_eval=5  # Use only 5 images per class
     )
     assert results1['images_per_class_eval'] == 5
     assert results1['eval_synth_size'] == num_classes * 5
@@ -358,11 +345,9 @@ def test_evaluation_with_options():
         pseudo_labels=labels,
         test_features=test_features,
         test_labels=test_labels,
-        cluster_to_label=cluster_to_label,
         num_trials=2,
         train_epochs=5,
-        labeled_data_percentage=0.5,  # Use only 50% of labeled data
-        include_supervised_baseline=False
+        labeled_data_percentage=0.5  # Use only 50% of labeled data
     )
     assert results2['labeled_data_percentage'] == 0.5
     assert results2['real_data_size'] == int(num_samples * 0.5)
@@ -375,12 +360,10 @@ def test_evaluation_with_options():
         pseudo_labels=labels,
         test_features=test_features,
         test_labels=test_labels,
-        cluster_to_label=cluster_to_label,
         num_trials=2,
         train_epochs=5,
         images_per_class_eval=3,
-        labeled_data_percentage=0.3,
-        include_supervised_baseline=False
+        labeled_data_percentage=0.3
     )
     assert results3['images_per_class_eval'] == 3
     assert results3['labeled_data_percentage'] == 0.3
