@@ -1,5 +1,5 @@
 """
-Data loading module for CIFAR10, CIFAR100, ImageNet, and Tiny ImageNet datasets.
+Data loading module for CIFAR10, CIFAR100, ImageNet, Tiny ImageNet, and Imagenette datasets.
 
 This module handles loading and preprocessing of multiple datasets
 for clustering tasks. It provides utilities for creating data loaders
@@ -12,9 +12,13 @@ from torchvision import datasets, transforms
 from typing import Tuple, Optional, Union
 import numpy as np
 from PIL import Image
+import os
+import tarfile
+import urllib.request
+from pathlib import Path
 
 # Supported datasets
-SUPPORTED_DATASETS = ['cifar10', 'cifar100', 'imagenet', 'tiny-imagenet']
+SUPPORTED_DATASETS = ['cifar10', 'cifar100', 'imagenet', 'tiny-imagenet', 'imagenette']
 
 
 class CIFAR100Dataset(Dataset):
@@ -252,6 +256,148 @@ class TinyImageNetDataset(Dataset):
         return image, label
 
 
+class ImagenetteDataset(Dataset):
+    """
+    Wrapper for Imagenette dataset from fastai with custom transformations.
+    
+    Imagenette is a subset of 10 easily classified classes from ImageNet.
+    This dataset class handles downloading and loading the dataset.
+    """
+    
+    # Imagenette class names (WordNet IDs to class names mapping)
+    CLASS_NAMES = [
+        'tench', 'English springer', 'cassette player', 'chain saw', 'church',
+        'French horn', 'garbage truck', 'gas pump', 'golf ball', 'parachute'
+    ]
+    
+    # URLs for different versions
+    URLS = {
+        'full': 'https://s3.amazonaws.com/fast-ai-imageclas/imagenette2.tgz',
+        '160': 'https://s3.amazonaws.com/fast-ai-imageclas/imagenette2-160.tgz',
+        '320': 'https://s3.amazonaws.com/fast-ai-imageclas/imagenette2-320.tgz',
+    }
+    
+    def __init__(self, root: str, split: str = "train", transform=None, 
+                 download: bool = True, version: str = '320'):
+        """
+        Initialize the Imagenette dataset.
+        
+        Args:
+            root: Root directory where dataset will be stored
+            split: Dataset split ('train' or 'val')
+            transform: Optional transform to apply to images
+            download: If True, download the dataset if not present
+            version: Version of dataset ('full', '160', or '320')
+        """
+        self.root = Path(root)
+        self.split = split
+        self.transform = transform
+        self.version = version
+        
+        # Determine dataset directory name based on version
+        if version == 'full':
+            self.dataset_dir = self.root / 'imagenette2'
+        else:
+            self.dataset_dir = self.root / f'imagenette2-{version}'
+        
+        self.split_dir = self.dataset_dir / split
+        
+        # Download if needed
+        if download and not self.split_dir.exists():
+            self._download_and_extract()
+        
+        if not self.split_dir.exists():
+            raise RuntimeError(
+                f"Dataset not found at {self.split_dir}. "
+                f"Set download=True to download it automatically."
+            )
+        
+        # Build file list and labels
+        self.samples = []
+        self.labels = []
+        self._build_file_list()
+        
+    def _download_and_extract(self):
+        """Download and extract the Imagenette dataset."""
+        url = self.URLS[self.version]
+        
+        if self.version == 'full':
+            filename = 'imagenette2.tgz'
+        else:
+            filename = f'imagenette2-{self.version}.tgz'
+        
+        filepath = self.root / filename
+        
+        # Create root directory if needed
+        self.root.mkdir(parents=True, exist_ok=True)
+        
+        # Download if not already present
+        if not filepath.exists():
+            print(f"Downloading Imagenette {self.version} from {url}...")
+            try:
+                urllib.request.urlretrieve(url, filepath)
+                print(f"Download complete: {filepath}")
+            except Exception as e:
+                raise RuntimeError(f"Failed to download Imagenette: {e}")
+        
+        # Extract if not already extracted
+        if not self.dataset_dir.exists():
+            print(f"Extracting {filepath}...")
+            try:
+                with tarfile.open(filepath, 'r:gz') as tar:
+                    tar.extractall(self.root)
+                print(f"Extraction complete: {self.dataset_dir}")
+            except Exception as e:
+                raise RuntimeError(f"Failed to extract Imagenette: {e}")
+        
+    def _build_file_list(self):
+        """Build list of image files and their labels."""
+        # Get all class directories (sorted for consistent ordering)
+        class_dirs = sorted([d for d in self.split_dir.iterdir() if d.is_dir()])
+        
+        # Build samples list with labels
+        for class_idx, class_dir in enumerate(class_dirs):
+            # Get all image files in this class directory
+            image_files = sorted(list(class_dir.glob('*.JPEG')))
+            
+            for img_path in image_files:
+                self.samples.append(img_path)
+                self.labels.append(class_idx)
+        
+        print(f"Loaded {len(self.samples)} images from {self.split} split with {len(class_dirs)} classes")
+    
+    def __len__(self) -> int:
+        """Return the total number of samples in the dataset."""
+        return len(self.samples)
+    
+    def __getitem__(self, idx: int) -> Tuple[torch.Tensor, int]:
+        """
+        Get a single sample from the dataset.
+        
+        Args:
+            idx: Index of the sample to retrieve
+            
+        Returns:
+            Tuple of (image tensor, label)
+        """
+        img_path = self.samples[idx]
+        label = self.labels[idx]
+        
+        # Load image
+        try:
+            image = Image.open(img_path).convert('RGB')
+        except Exception as e:
+            print(f"Warning: Failed to load image {img_path}: {e}")
+            # Return a blank image if loading fails
+            image = Image.new('RGB', (224, 224), color='black')
+        
+        # Apply transformations
+        if self.transform is not None:
+            image = self.transform(image)
+        
+        return image, label
+
+
 def get_cifar10_transforms(image_size: int = 224) -> Tuple[transforms.Compose, transforms.Compose]:
     """
     Get transformations for CIFAR10 suitable for DINOv2.
@@ -404,6 +550,47 @@ def get_tiny_imagenet_transforms(image_size: int = 224) -> Tuple[transforms.Comp
     return train_transform, test_transform
 
 
+def get_imagenette_transforms(image_size: int = 224) -> Tuple[transforms.Compose, transforms.Compose]:
+    """
+    Get transformations for Imagenette suitable for DINOv2 and CLIP.
+    
+    Imagenette images vary in size (160-320px depending on version),
+    so we resize to the target size. DINOv2 and CLIP expect images 
+    normalized with ImageNet statistics.
+    
+    Args:
+        image_size: Target image size (default: 224 for DINOv2/CLIP)
+        
+    Returns:
+        Tuple of (train_transform, test_transform)
+    """
+    # ImageNet normalization values used by DINOv2 and CLIP
+    normalize = transforms.Normalize(
+        mean=[0.485, 0.456, 0.406],
+        std=[0.229, 0.224, 0.225]
+    )
+    
+    # Training transforms with data augmentation for TEMI
+    train_transform = transforms.Compose([
+        transforms.Resize(image_size),
+        transforms.CenterCrop(image_size),
+        transforms.RandomHorizontalFlip(),
+        transforms.ColorJitter(brightness=0.1, contrast=0.1, saturation=0.1),
+        transforms.ToTensor(),
+        normalize
+    ])
+    
+    # Test transforms without augmentation
+    test_transform = transforms.Compose([
+        transforms.Resize(image_size),
+        transforms.CenterCrop(image_size),
+        transforms.ToTensor(),
+        normalize
+    ])
+    
+    return train_transform, test_transform
+
+
 def create_data_loaders(
     root: str,
     batch_size: int = 256,
@@ -419,7 +606,7 @@ def create_data_loaders(
         batch_size: Number of samples per batch
         num_workers: Number of worker processes for data loading
         image_size: Target image size for resizing
-        dataset_name: Name of dataset to load ('cifar10', 'cifar100', 'imagenet', or 'tiny-imagenet')
+        dataset_name: Name of dataset to load ('cifar10', 'cifar100', 'imagenet', 'tiny-imagenet', or 'imagenette')
         
     Returns:
         Tuple of (train_loader, test_loader)
@@ -494,6 +681,24 @@ def create_data_loaders(
             transform=test_transform,
             streaming=False
         )
+    elif dataset_name.lower() == 'imagenette':
+        train_transform, test_transform = get_imagenette_transforms(image_size)
+        
+        train_dataset = ImagenetteDataset(
+            root=root,
+            split='train',
+            transform=train_transform,
+            download=True,
+            version='320'  # Use 320px version for good balance of quality and speed
+        )
+        
+        test_dataset = ImagenetteDataset(
+            root=root,
+            split='val',
+            transform=test_transform,
+            download=True,
+            version='320'
+        )
     else:
         raise ValueError(
             f"Unknown dataset: {dataset_name}. "
@@ -525,7 +730,7 @@ def get_dataset_statistics(data_loader: DataLoader, dataset_name: str = 'cifar10
     
     Args:
         data_loader: DataLoader to compute statistics for
-        dataset_name: Name of the dataset ('cifar10', 'cifar100', 'imagenet', or 'tiny-imagenet')
+        dataset_name: Name of the dataset ('cifar10', 'cifar100', 'imagenet', 'tiny-imagenet', or 'imagenette')
         
     Returns:
         Dictionary containing dataset statistics
@@ -541,6 +746,8 @@ def get_dataset_statistics(data_loader: DataLoader, dataset_name: str = 'cifar10
         num_classes = 1000  # ImageNet-1K has 1000 classes
     elif dataset_name.lower() == 'tiny-imagenet':
         num_classes = 200  # Tiny ImageNet has 200 classes
+    elif dataset_name.lower() == 'imagenette':
+        num_classes = 10  # Imagenette has 10 classes
     else:
         num_classes = None
     

@@ -52,8 +52,8 @@ def parse_arguments():
     
     # Data arguments
     parser.add_argument('--dataset', type=str, default='cifar100',
-                        choices=['cifar10', 'cifar100', 'imagenet', 'tiny-imagenet'],
-                        help='Dataset to use (cifar10, cifar100, imagenet, or tiny-imagenet)')
+                        choices=['cifar10', 'cifar100', 'imagenet', 'tiny-imagenet', 'imagenette'],
+                        help='Dataset to use (cifar10, cifar100, imagenet, tiny-imagenet, or imagenette)')
     parser.add_argument('--data_root', type=str, default='./data',
                         help='Root directory for dataset storage')
     parser.add_argument('--batch_size', type=int, default=256,
@@ -173,6 +173,8 @@ def setup_directories(args):
             args.num_clusters = 1000
         elif args.dataset.lower() == 'tiny-imagenet':
             args.num_clusters = 200
+        elif args.dataset.lower() == 'imagenette':
+            args.num_clusters = 10
     
     # Generate experiment name if not provided
     if args.experiment_name is None:
@@ -535,6 +537,10 @@ def generate_and_save_pseudo_labels(
     elif args.dataset.lower() == 'tiny-imagenet':
         # Tiny ImageNet has 200 classes
         class_names = [f"Class_{i}" for i in range(200)]
+    elif args.dataset.lower() == 'imagenette':
+        # Imagenette has 10 classes with specific names
+        from src.data_loader import ImagenetteDataset
+        class_names = ImagenetteDataset.CLASS_NAMES
     
     # Generate pseudo labels for training set
     print("\n>>> Training Set <<<")

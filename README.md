@@ -1,10 +1,12 @@
-# TEMI Deep Clustering on CIFAR10, CIFAR100, Tiny ImageNet, and ImageNet
+# TEMI Deep Clustering on CIFAR10, CIFAR100, Tiny ImageNet, ImageNet, and Imagenette
 
-This repository implements TEMI (Transformation-Equivariant Multi-Instance) clustering on multiple datasets (CIFAR10, CIFAR100, Tiny ImageNet, and ImageNet) using DINOv2/DINOv3 or CLIP features. The implementation follows the paper "Self-Supervised Clustering with Deep Learning" (arXiv:2303.17896).
+This repository implements TEMI (Transformation-Equivariant Multi-Instance) clustering on multiple datasets (CIFAR10, CIFAR100, Tiny ImageNet, ImageNet, and Imagenette) using DINOv2/DINOv3 or CLIP features. The implementation follows the paper "Self-Supervised Clustering with Deep Learning" (arXiv:2303.17896).
 
 **🚀 New to this project? Check out [QUICKSTART.md](QUICKSTART.md) to get started in minutes!**
 
 **📊 Want to use ImageNet? Check out [IMAGENET_USAGE.md](IMAGENET_USAGE.md) for the complete guide!**
+
+**🎯 Want to use Imagenette? Check out [IMAGENETTE_USAGE.md](IMAGENETTE_USAGE.md) for a quick and easy dataset!**
 
 **🏷️ Want to generate pseudo labels for your clusters? Check out [PSEUDO_LABELING_GUIDE.md](PSEUDO_LABELING_GUIDE.md)!**
 
@@ -45,7 +47,7 @@ The pipeline consists of five main stages:
 
 ## Features
 
-- **Multiple datasets**: Support for CIFAR10, CIFAR100, Tiny ImageNet, and ImageNet-1K datasets
+- **Multiple datasets**: Support for CIFAR10, CIFAR100, Tiny ImageNet, ImageNet-1K, and Imagenette datasets
 - **Multiple feature extractors**: Support for DINOv2, DINOv3, and CLIP models for powerful visual representations
 - **TEMI clustering algorithm**: Implementation following the paper specifications
 - **Pseudo label generation**: Map clusters to actual labels using k-nearest samples for interpretability and semi-supervised learning
@@ -103,11 +105,13 @@ clustering-private/
 
 For complete examples and detailed usage instructions, see:
 - **[IMAGENET_USAGE.md](IMAGENET_USAGE.md)** - Complete guide for using ImageNet dataset
+- **[IMAGENETTE_USAGE.md](IMAGENETTE_USAGE.md)** - Complete guide for using Imagenette dataset
 - **[CLIP_USAGE.md](CLIP_USAGE.md)** - Complete guide for using CLIP models
 - **[VISUALIZATION_GUIDE.md](VISUALIZATION_GUIDE.md)** - Detailed guide for cluster visualization
 - **[example_clip_usage.py](example_clip_usage.py)** - CLIP example commands and workflows
 - **[example_dinov3_visualization.py](example_dinov3_visualization.py)** - DINOv3 example commands and workflows
 - **[example_imagenet_usage.py](example_imagenet_usage.py)** - ImageNet example commands and workflows
+- **[example_imagenette_usage.py](example_imagenette_usage.py)** - Imagenette example commands and workflows
 
 ### Basic Usage
 
@@ -121,6 +125,12 @@ Run clustering on CIFAR10 (k=10 clusters using DINOv2):
 
 ```bash
 python main.py --dataset cifar10
+```
+
+Run clustering on Imagenette (k=10 clusters, easy dataset for quick testing):
+
+```bash
+python main.py --dataset imagenette
 ```
 
 Run clustering on Tiny ImageNet (k=200 clusters using DINOv2):
@@ -343,9 +353,10 @@ python example_distillation.py \
 ## Command Line Arguments
 
 ### Data Arguments
-- `--dataset`: Dataset to use (choices: cifar10, cifar100, imagenet, tiny-imagenet; default: cifar100)
+- `--dataset`: Dataset to use (choices: cifar10, cifar100, imagenet, tiny-imagenet, imagenette; default: cifar100)
   - **cifar10**: 10 classes, 32x32 images, 50K train / 10K test
   - **cifar100**: 100 classes, 32x32 images, 50K train / 10K test
+  - **imagenette**: 10 classes, 320x320 images, 9.5K train / 3.9K test (auto-download from fastai)
   - **tiny-imagenet**: 200 classes, 64x64 images, 100K train / 10K test (requires internet)
   - **imagenet**: 1000 classes, 128x128 images, 1.2M train / 50K test (requires internet)
 - `--data_root`: Root directory for dataset storage (default: ./data)
@@ -622,14 +633,14 @@ To handle large datasets efficiently:
 This implementation stays faithful to the TEMI paper with the following considerations:
 
 1. **Feature Extractor**: Uses DINOv2 instead of training from scratch (as recommended for better features)
-2. **Dataset**: Applied to multiple datasets (CIFAR10, CIFAR100, Tiny ImageNet, ImageNet) for flexibility
+2. **Dataset**: Applied to multiple datasets (CIFAR10, CIFAR100, Tiny ImageNet, ImageNet, Imagenette) for flexibility
 3. **Augmentations**: Simplified augmentation strategy suitable for CIFAR100's small images
 
 All core algorithmic components follow the paper specifications exactly.
 
 ## Dataset Details
 
-The framework supports four datasets with different characteristics:
+The framework supports five datasets with different characteristics:
 
 ### CIFAR10
 - **Classes**: 10 (airplane, automobile, bird, cat, deer, dog, frog, horse, ship, truck)
@@ -648,6 +659,15 @@ The framework supports four datasets with different characteristics:
 - **Default Clusters**: 100
 - **Source**: torchvision.datasets.CIFAR100
 - **Download**: Automatic
+
+### Imagenette
+- **Classes**: 10 (tench, English springer, cassette player, chain saw, church, French horn, garbage truck, gas pump, golf ball, parachute)
+- **Image Size**: 320x320 (resized to 224x224 for models)
+- **Train Samples**: 9,469
+- **Test Samples**: 3,925
+- **Default Clusters**: 10
+- **Source**: fastai (https://github.com/fastai/imagenette)
+- **Download**: Automatic from https://s3.amazonaws.com/fast-ai-imageclas/imagenette2-320.tgz
 
 ### Tiny ImageNet
 - **Classes**: 200 (subset of ImageNet classes)

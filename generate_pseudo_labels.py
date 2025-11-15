@@ -173,6 +173,10 @@ def load_dataset_for_visualization(config: dict, data_root: str):
     elif dataset_name.lower() == 'imagenet':
         # ImageNet has 1000 classes - using indices is fine
         class_names = [f"Class_{i}" for i in range(1000)]
+    elif dataset_name.lower() == 'imagenette':
+        # Imagenette has 10 classes with specific names
+        from src.data_loader import ImagenetteDataset
+        class_names = ImagenetteDataset.CLASS_NAMES
     
     return all_images, all_labels, class_names
 
