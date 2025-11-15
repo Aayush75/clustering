@@ -567,8 +567,9 @@ def generate_and_save_pseudo_labels(
     print("\n>>> Test Set (using training cluster-to-label mapping) <<<")
     test_pseudo_labels = apply_pseudo_labels(test_predictions, train_cluster_to_label)
     
-    # Compute test accuracy using training mapping
-    test_accuracy = (test_pseudo_labels == test_labels).float().mean().item() * 100
+    # Compute test accuracy using training mapping (ensure same device)
+    # Move both tensors to CPU for a safe comparison (predictions may be on GPU)
+    test_accuracy = (test_pseudo_labels.cpu() == test_labels.cpu()).float().mean().item() * 100
     print(f"Test pseudo-label accuracy (with training mapping): {test_accuracy:.2f}%")
     print(f"Using cluster-to-label mapping from training set (no test label leakage)")
     
