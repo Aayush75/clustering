@@ -249,7 +249,11 @@ def plot_cluster_distribution(
     """
     # Convert to numpy if needed
     if not isinstance(predictions, np.ndarray):
-        predictions = np.array(predictions)
+        # Handle torch tensors
+        if hasattr(predictions, 'cpu'):
+            predictions = predictions.cpu().numpy()
+        else:
+            predictions = np.array(predictions)
     
     # Count samples per cluster
     unique, counts = np.unique(predictions, return_counts=True)

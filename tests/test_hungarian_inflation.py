@@ -47,13 +47,13 @@ print("""
 Hungarian matching finds the BEST POST-HOC alignment between predictions and labels.
 
 This is appropriate when:
-✓ Evaluating UNSUPERVISED clustering (cluster IDs are arbitrary)
-✓ Cluster 0 could mean any class - Hungarian finds the optimal mapping
+[OK] Evaluating UNSUPERVISED clustering (cluster IDs are arbitrary)
+[OK] Cluster 0 could mean any class - Hungarian finds the optimal mapping
 
 This is WRONG when:
-✗ Model is trained on specific labels (supervised learning)
-✗ Model already learned label=42 means "apple" - no remapping needed!
-✗ Your distillation pipeline (model trained on pseudo-labels)
+[FAIL] Model is trained on specific labels (supervised learning)
+[FAIL] Model already learned label=42 means "apple" - no remapping needed!
+[FAIL] Your distillation pipeline (model trained on pseudo-labels)
 
 The fix applied:
 - Changed from cluster_accuracy() (Hungarian matching)

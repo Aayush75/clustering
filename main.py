@@ -56,6 +56,8 @@ def parse_arguments():
                         help='Dataset to use (cifar10, cifar100, imagenet, tiny-imagenet, or imagenette)')
     parser.add_argument('--data_root', type=str, default='./data',
                         help='Root directory for dataset storage')
+    parser.add_argument('--use_folder_structure', action='store_true',
+                        help='Load CIFAR-100 from folder structure (data/cifar100/train/0/*.png) instead of standard format')
     parser.add_argument('--batch_size', type=int, default=256,
                         help='Batch size for data loading')
     parser.add_argument('--num_workers', type=int, default=4,
@@ -248,7 +250,8 @@ def extract_features(args, experiment_dir):
         root=args.data_root,
         batch_size=args.batch_size,
         num_workers=args.num_workers,
-        dataset_name=args.dataset
+        dataset_name=args.dataset,
+        use_folder_structure=args.use_folder_structure
     )
     print(f"Training samples: {len(train_loader.dataset)}")
     print(f"Test samples: {len(test_loader.dataset)}")
@@ -608,7 +611,8 @@ def generate_and_save_pseudo_labels(
                 root=args.data_root,
                 batch_size=args.batch_size,
                 num_workers=args.num_workers,
-                dataset_name=args.dataset
+                dataset_name=args.dataset,
+                use_folder_structure=args.use_folder_structure
             )
             
             # Get all training images (keep as torch tensor until final visualization step)

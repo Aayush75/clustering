@@ -27,9 +27,11 @@ class CIFAR100Dataset(Dataset):
     
     This dataset class handles both training and test splits of CIFAR100,
     applying transformations suitable for DINOv2 feature extraction.
+    Supports both standard CIFAR-100 format and folder-organized format.
     """
     
-    def __init__(self, root: str, train: bool = True, transform=None, download: bool = True):
+    def __init__(self, root: str, train: bool = True, transform=None, download: bool = True, 
+                 use_folder_structure: bool = False):
         """
         Initialize the CIFAR100 dataset.
         
@@ -38,16 +40,95 @@ class CIFAR100Dataset(Dataset):
             train: If True, use training set, otherwise use test set
             transform: Optional transform to apply to images
             download: If True, download the dataset if not present
+            use_folder_structure: If True, load from cifar100/train or cifar100/test folder structure
         """
-        self.cifar100 = datasets.CIFAR100(
-            root=root,
-            train=train,
-            download=download,
-            transform=transform
-        )
+        self.transform = transform
+        self.use_folder_structure = use_folder_structure
+        
+        if use_folder_structure:
+            # Load from folder structure: data/cifar100/train/0/*.png or data/cifar100/test/0/*.png
+            self._load_from_folders(root, train)
+        else:
+            # Use standard torchvision CIFAR100
+            self.cifar100 = datasets.CIFAR100(
+                root=root,
+                train=train,
+                download=download,
+                transform=transform
+            )
+    
+    def _load_from_folders(self, root: str, train: bool):
+        """Load CIFAR-100 from folder structure organized by class."""
+        root_path = Path(root) / 'cifar100'
+        
+        # Try 'train' and 'test' first, then 'train' and 'val'
+        if train:
+            split_dir = root_path / 'train'
+        else:
+            # Try 'test' first, then 'val'
+            test_dir = root_path / 'test'
+            val_dir = root_path / 'val'
+            if test_dir.exists():
+                split_dir = test_dir
+            elif val_dir.exists():
+                split_dir = val_dir
+            else:
+                raise FileNotFoundError(
+                    f"CIFAR-100 test/val folder not found. Tried: {test_dir} and {val_dir}. "
+                    f"Expected structure: {root}/cifar100/train/0/*.png and {root}/cifar100/test/0/*.png (or val/)"
+                )
+        
+        if not split_dir.exists():
+            raise FileNotFoundError(
+                f"CIFAR-100 folder structure not found at {split_dir}. "
+                f"Expected structure: {root}/cifar100/train/0/*.png or {root}/cifar100/test/0/*.png (or val/)"
+            )
+        
+        # Collect all images and labels
+        self.samples = []
+        self.labels = []
+        
+        # Get all class directories (sorted numerically)
+        class_dirs = sorted([d for d in split_dir.iterdir() if d.is_dir()], 
+                           key=lambda x: int(x.name))
+        
+        # Load CIFAR-100 class names
+        self.class_names = self._get_cifar100_class_names()
+        
+        # Build file list
+        for class_idx, class_dir in enumerate(class_dirs):
+            # Get all image files in this class directory
+            image_files = sorted(list(class_dir.glob('*.png')) + list(class_dir.glob('*.jpg')))
+            
+            for img_path in image_files:
+                self.samples.append(img_path)
+                self.labels.append(class_idx)
+        
+        print(f"Loaded {len(self.samples)} images from {split_dir} with {len(class_dirs)} classes")
+    
+    def _get_cifar100_class_names(self):
+        """Get CIFAR-100 class names in order."""
+        return [
+            'apple', 'aquarium_fish', 'baby', 'bear', 'beaver', 'bed', 'bee', 'beetle',
+            'bicycle', 'bottle', 'bowl', 'boy', 'bridge', 'bus', 'butterfly', 'camel',
+            'can', 'castle', 'caterpillar', 'cattle', 'chair', 'chimpanzee', 'clock',
+            'cloud', 'cockroach', 'couch', 'crab', 'crocodile', 'cup', 'dinosaur',
+            'dolphin', 'elephant', 'flatfish', 'forest', 'fox', 'girl', 'hamster',
+            'house', 'kangaroo', 'keyboard', 'lamp', 'lawn_mower', 'leopard', 'lion',
+            'lizard', 'lobster', 'man', 'maple_tree', 'motorcycle', 'mountain', 'mouse',
+            'mushroom', 'oak_tree', 'orange', 'orchid', 'otter', 'palm_tree', 'pear',
+            'pickup_truck', 'pine_tree', 'plain', 'plate', 'poppy', 'porcupine',
+            'possum', 'rabbit', 'raccoon', 'ray', 'road', 'rocket', 'rose', 'sea',
+            'seal', 'shark', 'shrew', 'skunk', 'skyscraper', 'snail', 'snake', 'spider',
+            'squirrel', 'streetcar', 'sunflower', 'sweet_pepper', 'table', 'tank',
+            'telephone', 'television', 'tiger', 'tractor', 'train', 'trout', 'tulip',
+            'turtle', 'wardrobe', 'whale', 'willow_tree', 'wolf', 'woman', 'worm'
+        ]
         
     def __len__(self) -> int:
         """Return the total number of samples in the dataset."""
+        if self.use_folder_structure:
+            return len(self.samples)
         return len(self.cifar100)
     
     def __getitem__(self, idx: int) -> Tuple[torch.Tensor, int]:
@@ -60,7 +141,25 @@ class CIFAR100Dataset(Dataset):
         Returns:
             Tuple of (image tensor, label)
         """
-        return self.cifar100[idx]
+        if self.use_folder_structure:
+            img_path = self.samples[idx]
+            label = self.labels[idx]
+            
+            # Load image
+            try:
+                image = Image.open(img_path).convert('RGB')
+            except Exception as e:
+                print(f"Warning: Failed to load image {img_path}: {e}")
+                # Return a blank image if loading fails
+                image = Image.new('RGB', (32, 32), color='black')
+            
+            # Apply transformations
+            if self.transform is not None:
+                image = self.transform(image)
+            
+            return image, label
+        else:
+            return self.cifar100[idx]
 
 
 class CIFAR10Dataset(Dataset):
@@ -596,7 +695,8 @@ def create_data_loaders(
     batch_size: int = 256,
     num_workers: int = 4,
     image_size: int = 224,
-    dataset_name: str = 'cifar100'
+    dataset_name: str = 'cifar100',
+    use_folder_structure: bool = False
 ) -> Tuple[DataLoader, DataLoader]:
     """
     Create training and test data loaders for specified dataset.
@@ -607,6 +707,7 @@ def create_data_loaders(
         num_workers: Number of worker processes for data loading
         image_size: Target image size for resizing
         dataset_name: Name of dataset to load ('cifar10', 'cifar100', 'imagenet', 'tiny-imagenet', or 'imagenette')
+        use_folder_structure: If True, load CIFAR-100 from folder structure (data/cifar100/train/0/*.png)
         
     Returns:
         Tuple of (train_loader, test_loader)
@@ -634,14 +735,16 @@ def create_data_loaders(
             root=root,
             train=True,
             transform=train_transform,
-            download=True
+            download=True,
+            use_folder_structure=use_folder_structure
         )
         
         test_dataset = CIFAR100Dataset(
             root=root,
             train=False,
             transform=test_transform,
-            download=True
+            download=True,
+            use_folder_structure=use_folder_structure
         )
     elif dataset_name.lower() == 'imagenet':
         train_transform, test_transform = get_imagenet_transforms(image_size)
