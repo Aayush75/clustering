@@ -51,6 +51,8 @@ def parse_arguments():
     # Data arguments (needed for visualization)
     parser.add_argument('--data_root', type=str, default='./data',
                         help='Root directory for dataset (needed for visualization)')
+    parser.add_argument('--imagenet_path', type=str, default=None,
+                        help='Path to ImageNet-1K parquet files (required for imagenet-1k dataset)')
     
     # Device arguments
     parser.add_argument('--device', type=str, default='cuda',
@@ -139,7 +141,7 @@ def load_clustering_model(experiment_dir: Path, config: dict, device: str):
     return clusterer
 
 
-def load_dataset_for_visualization(config: dict, data_root: str):
+def load_dataset_for_visualization(config: dict, data_root: str, imagenet_path: str = None):
     """Load dataset for visualization."""
     dataset_name = config.get('dataset', 'cifar100')
     batch_size = config.get('batch_size', 256)
@@ -150,7 +152,8 @@ def load_dataset_for_visualization(config: dict, data_root: str):
         root=data_root,
         batch_size=batch_size,
         num_workers=num_workers,
-        dataset_name=dataset_name
+        dataset_name=dataset_name,
+        imagenet_path=imagenet_path
     )
     
     # Get all training images and labels (keep as tensors)
@@ -172,6 +175,9 @@ def load_dataset_for_visualization(config: dict, data_root: str):
         class_names = cifar.classes
     elif dataset_name.lower() == 'imagenet':
         # ImageNet has 1000 classes - using indices is fine
+        class_names = [f"Class_{i}" for i in range(1000)]
+    elif dataset_name.lower() == 'imagenet-1k':
+        # ImageNet-1K has 1000 classes - using indices is fine
         class_names = [f"Class_{i}" for i in range(1000)]
     elif dataset_name.lower() == 'imagenette':
         # Imagenette has 10 classes with specific names
@@ -334,7 +340,7 @@ def main():
         try:
             # Load dataset images
             all_images, all_labels, class_names = load_dataset_for_visualization(
-                config, args.data_root
+                config, args.data_root, args.imagenet_path
             )
             
             # Generate visualization for training data
