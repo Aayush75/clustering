@@ -417,10 +417,15 @@ class ImageNet1kParquetDataset(Dataset):
         
         Args:
             root: Root directory where parquet files are stored
-                  Expected structure:
-                  - root/train/*.parquet (294 files)
-                  - root/validation/*.parquet (14 files)
-                  - root/test/*.parquet (28 files)
+                  Supported structures:
+                  1. With subdirectories:
+                     - root/train/*.parquet (294 files)
+                     - root/validation/*.parquet (14 files)
+                     - root/test/*.parquet (28 files)
+                  2. Without subdirectories (all files in root):
+                     - root/train-*.parquet (294 files)
+                     - root/validation-*.parquet (14 files)
+                     - root/test-*.parquet (28 files)
             split: Dataset split ('train', 'validation', or 'test')
             transform: Optional transform to apply to images
         """
@@ -436,28 +441,32 @@ class ImageNet1kParquetDataset(Dataset):
         self.split = split
         self.transform = transform
         
-        # Determine split directory
-        self.split_dir = self.root / split
-        
-        if not self.split_dir.exists():
-            raise RuntimeError(
-                f"Dataset split directory not found at {self.split_dir}. "
-                f"Please provide the correct path using --imagenet_path argument."
-            )
-        
-        # Find all parquet files in the split directory
-        self.parquet_files = sorted(list(self.split_dir.glob('*.parquet')))
+        # Try to find parquet files in two possible structures
+        # Structure 1: root/split/*.parquet (with subdirectories)
+        split_dir = self.root / split
+        if split_dir.exists() and split_dir.is_dir():
+            self.parquet_files = sorted(list(split_dir.glob('*.parquet')))
+            search_path = split_dir
+        else:
+            # Structure 2: root/split-*.parquet (all files in root directory)
+            self.parquet_files = sorted(list(self.root.glob(f'{split}-*.parquet')))
+            search_path = self.root
         
         if len(self.parquet_files) == 0:
             raise RuntimeError(
-                f"No parquet files found in {self.split_dir}. "
-                f"Please ensure the dataset is downloaded correctly."
+                f"No parquet files found for split '{split}'.\n"
+                f"Searched in:\n"
+                f"  1. {self.root / split}/*.parquet\n"
+                f"  2. {self.root}/{split}-*.parquet\n"
+                f"Please ensure:\n"
+                f"  - The --imagenet_path points to the correct directory\n"
+                f"  - Parquet files are named correctly (e.g., train-00000.parquet)"
             )
         
-        print(f"Found {len(self.parquet_files)} parquet files in {split} split")
+        print(f"Found {len(self.parquet_files)} parquet files for {split} split in {search_path}")
         
         # Load all parquet files and concatenate
-        print(f"Loading parquet files from {self.split_dir}...")
+        print(f"Loading parquet files for {split} split...")
         dfs = []
         for parquet_file in self.parquet_files:
             df = pd.read_parquet(parquet_file)
