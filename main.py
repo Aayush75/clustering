@@ -52,13 +52,12 @@ def parse_arguments():
     
     # Data arguments
     parser.add_argument('--dataset', type=str, default='cifar100',
-                        choices=['cifar10', 'cifar100', 'imagenet', 'imagenet-1k', 'tiny-imagenet', 'imagenette'],
-                        help='Dataset to use (cifar10, cifar100, imagenet, imagenet-1k, tiny-imagenet, or imagenette)')
+                        choices=['cifar10', 'cifar100', 'imagenet', 'tiny-imagenet', 'imagenette'],
+                        help='Dataset to use (cifar10, cifar100, imagenet, tiny-imagenet, or imagenette)')
     parser.add_argument('--data_root', type=str, default='./data',
                         help='Root directory for dataset storage')
-    parser.add_argument('--imagenet_path', type=str, default=None,
-                        help='Path to ImageNet-1K parquet files (required for imagenet-1k dataset). '
-                             'Expected structure: path/train/*.parquet, path/validation/*.parquet, path/test/*.parquet')
+    parser.add_argument('--use_folder_structure', action='store_true',
+                        help='Load CIFAR-100 from folder structure (data/cifar100/train/0/*.png) instead of standard format')
     parser.add_argument('--batch_size', type=int, default=256,
                         help='Batch size for data loading')
     parser.add_argument('--num_workers', type=int, default=4,
@@ -174,8 +173,6 @@ def setup_directories(args):
             args.num_clusters = 100
         elif args.dataset.lower() == 'imagenet':
             args.num_clusters = 1000
-        elif args.dataset.lower() == 'imagenet-1k':
-            args.num_clusters = 1000
         elif args.dataset.lower() == 'tiny-imagenet':
             args.num_clusters = 200
         elif args.dataset.lower() == 'imagenette':
@@ -254,7 +251,7 @@ def extract_features(args, experiment_dir):
         batch_size=args.batch_size,
         num_workers=args.num_workers,
         dataset_name=args.dataset,
-        imagenet_path=args.imagenet_path
+        use_folder_structure=args.use_folder_structure
     )
     print(f"Training samples: {len(train_loader.dataset)}")
     print(f"Test samples: {len(test_loader.dataset)}")
@@ -573,8 +570,9 @@ def generate_and_save_pseudo_labels(
     print("\n>>> Test Set (using training cluster-to-label mapping) <<<")
     test_pseudo_labels = apply_pseudo_labels(test_predictions, train_cluster_to_label)
     
-    # Compute test accuracy using training mapping
-    test_accuracy = (test_pseudo_labels == test_labels).float().mean().item() * 100
+    # Compute test accuracy using training mapping (ensure same device)
+    # Move both tensors to CPU for a safe comparison (predictions may be on GPU)
+    test_accuracy = (test_pseudo_labels.cpu() == test_labels.cpu()).float().mean().item() * 100
     print(f"Test pseudo-label accuracy (with training mapping): {test_accuracy:.2f}%")
     print(f"Using cluster-to-label mapping from training set (no test label leakage)")
     
@@ -613,7 +611,8 @@ def generate_and_save_pseudo_labels(
                 root=args.data_root,
                 batch_size=args.batch_size,
                 num_workers=args.num_workers,
-                dataset_name=args.dataset
+                dataset_name=args.dataset,
+                use_folder_structure=args.use_folder_structure
             )
             
             # Get all training images (keep as torch tensor until final visualization step)
