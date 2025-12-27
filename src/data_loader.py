@@ -18,7 +18,7 @@ import urllib.request
 from pathlib import Path
 
 # Supported datasets
-SUPPORTED_DATASETS = ['cifar10', 'cifar100', 'imagenet', 'tiny-imagenet', 'imagenette']
+SUPPORTED_DATASETS = ['cifar10', 'cifar100', 'imagenet', 'imagenet-1k', 'tiny-imagenet', 'imagenette']
 
 
 class CIFAR100Dataset(Dataset):
@@ -203,6 +203,113 @@ class CIFAR10Dataset(Dataset):
             Tuple of (image tensor, label)
         """
         return self.cifar10[idx]
+
+
+class ImageNet1KDataset(Dataset):
+    """
+    Wrapper for ImageNet-1K dataset from folder structure with custom transformations.
+    
+    This dataset class handles ImageNet-1K dataset from extracted folder structure,
+    applying transformations suitable for DINOv2 and CLIP feature extraction.
+    Expected structure: root/imagenet_data/train/0000/*.JPEG and root/imagenet_data/val/0000/*.JPEG
+    """
+    
+    def __init__(self, root: str, train: bool = True, transform=None):
+        """
+        Initialize the ImageNet-1K dataset from folder structure.
+        
+        Args:
+            root: Root directory where dataset is stored (e.g., /home/ssl.distillation/WMDD/datasets)
+            train: If True, use training set, otherwise use validation set
+            transform: Optional transform to apply to images
+        """
+        self.transform = transform
+        
+        # Load from folder structure
+        self._load_from_folders(root, train)
+    
+    def _load_from_folders(self, root: str, train: bool):
+        """Load ImageNet-1K from folder structure organized by class."""
+        root_path = Path(root) / 'imagenet_data'
+        
+        # Select train or val split
+        if train:
+            split_dir = root_path / 'train'
+        else:
+            split_dir = root_path / 'val'
+        
+        if not split_dir.exists():
+            raise FileNotFoundError(
+                f"ImageNet-1K folder structure not found at {split_dir}. "
+                f"Expected structure: {root}/imagenet_data/train/0000/*.JPEG and {root}/imagenet_data/val/0000/*.JPEG"
+            )
+        
+        # Collect all images and labels
+        self.samples = []
+        self.labels = []
+        
+        # Get all class directories (sorted numerically: 0000, 0001, ..., 0999)
+        class_dirs = sorted([d for d in split_dir.iterdir() if d.is_dir()], 
+                           key=lambda x: int(x.name))
+        
+        if len(class_dirs) != 1000:
+            print(f"Warning: Expected 1000 classes but found {len(class_dirs)} in {split_dir}")
+        
+        # Load ImageNet-1K class names
+        self.class_names = self._get_imagenet1k_class_names()
+        
+        # Build file list
+        for class_idx, class_dir in enumerate(class_dirs):
+            # Get all image files in this class directory
+            image_files = sorted(
+                list(class_dir.glob('*.JPEG')) + 
+                list(class_dir.glob('*.jpeg')) + 
+                list(class_dir.glob('*.jpg')) + 
+                list(class_dir.glob('*.png'))
+            )
+            
+            for img_path in image_files:
+                self.samples.append(img_path)
+                self.labels.append(class_idx)
+        
+        print(f"Loaded {len(self.samples)} images from {split_dir} with {len(class_dirs)} classes")
+    
+    def _get_imagenet1k_class_names(self):
+        """Get ImageNet-1K class names (WordNet IDs) in order."""
+        # These are the 1000 ImageNet class names in synset order
+        # For brevity, we'll use class indices as names. Full names can be loaded from a file if needed.
+        return [f"class_{i:04d}" for i in range(1000)]
+    
+    def __len__(self) -> int:
+        """Return the total number of samples in the dataset."""
+        return len(self.samples)
+    
+    def __getitem__(self, idx: int) -> Tuple[torch.Tensor, int]:
+        """
+        Get a single sample from the dataset.
+        
+        Args:
+            idx: Index of the sample to retrieve
+            
+        Returns:
+            Tuple of (image tensor, label)
+        """
+        img_path = self.samples[idx]
+        label = self.labels[idx]
+        
+        # Load image
+        try:
+            image = Image.open(img_path).convert('RGB')
+        except Exception as e:
+            print(f"Warning: Failed to load image {img_path}: {e}")
+            # Return a blank image if loading fails
+            image = Image.new('RGB', (224, 224), color='black')
+        
+        # Apply transformations
+        if self.transform is not None:
+            image = self.transform(image)
+        
+        return image, label
 
 
 class ImageNetDataset(Dataset):
@@ -573,6 +680,37 @@ def get_cifar100_transforms(image_size: int = 224) -> Tuple[transforms.Compose, 
     return train_transform, test_transform
 
 
+def get_imagenet1k_transforms(image_size: int = 224) -> Tuple[transforms.Compose, transforms.Compose]:
+    """
+    Get transforms for ImageNet-1K dataset from folder structure.
+    
+    Args:
+        image_size: Target image size (default 224 for DINOv2)
+        
+    Returns:
+        Tuple of (train_transform, test_transform)
+    """
+    # Standard ImageNet normalization
+    normalize = transforms.Normalize(
+        mean=[0.485, 0.456, 0.406],
+        std=[0.229, 0.224, 0.225]
+    )
+    
+    train_transform = transforms.Compose([
+        transforms.Resize((image_size, image_size)),
+        transforms.ToTensor(),
+        normalize
+    ])
+    
+    test_transform = transforms.Compose([
+        transforms.Resize((image_size, image_size)),
+        transforms.ToTensor(),
+        normalize
+    ])
+    
+    return train_transform, test_transform
+
+
 def get_imagenet_transforms(image_size: int = 224) -> Tuple[transforms.Compose, transforms.Compose]:
     """
     Get transformations for ImageNet suitable for DINOv2 and CLIP.
@@ -746,6 +884,20 @@ def create_data_loaders(
             download=True,
             use_folder_structure=use_folder_structure
         )
+    elif dataset_name.lower() == 'imagenet-1k':
+        train_transform, test_transform = get_imagenet1k_transforms(image_size)
+        
+        train_dataset = ImageNet1KDataset(
+            root=root,
+            train=True,
+            transform=train_transform
+        )
+        
+        test_dataset = ImageNet1KDataset(
+            root=root,
+            train=False,
+            transform=test_transform
+        )
     elif dataset_name.lower() == 'imagenet':
         train_transform, test_transform = get_imagenet_transforms(image_size)
         
@@ -845,6 +997,8 @@ def get_dataset_statistics(data_loader: DataLoader, dataset_name: str = 'cifar10
         num_classes = 10
     elif dataset_name.lower() == 'cifar100':
         num_classes = 100
+    elif dataset_name.lower() == 'imagenet-1k':
+        num_classes = 1000  # ImageNet-1K has 1000 classes
     elif dataset_name.lower() == 'imagenet':
         num_classes = 1000  # ImageNet-1K has 1000 classes
     elif dataset_name.lower() == 'tiny-imagenet':

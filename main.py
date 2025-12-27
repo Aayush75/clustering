@@ -52,8 +52,8 @@ def parse_arguments():
     
     # Data arguments
     parser.add_argument('--dataset', type=str, default='cifar100',
-                        choices=['cifar10', 'cifar100', 'imagenet', 'tiny-imagenet', 'imagenette'],
-                        help='Dataset to use (cifar10, cifar100, imagenet, tiny-imagenet, or imagenette)')
+                        choices=['cifar10', 'cifar100', 'imagenet', 'imagenet-1k', 'tiny-imagenet', 'imagenette'],
+                        help='Dataset to use (cifar10, cifar100, imagenet, imagenet-1k, tiny-imagenet, or imagenette)')
     parser.add_argument('--data_root', type=str, default='./data',
                         help='Root directory for dataset storage')
     parser.add_argument('--use_folder_structure', action='store_true',
@@ -171,6 +171,8 @@ def setup_directories(args):
             args.num_clusters = 10
         elif args.dataset.lower() == 'cifar100':
             args.num_clusters = 100
+        elif args.dataset.lower() == 'imagenet-1k':
+            args.num_clusters = 1000
         elif args.dataset.lower() == 'imagenet':
             args.num_clusters = 1000
         elif args.dataset.lower() == 'tiny-imagenet':
@@ -534,6 +536,9 @@ def generate_and_save_pseudo_labels(
             class_names = cifar.classes
         except Exception as e:
             print(f"Could not load class names: {e}")
+    elif args.dataset.lower() == 'imagenet-1k':
+        # ImageNet-1K has 1000 classes
+        class_names = [f"class_{i:04d}" for i in range(1000)]
     elif args.dataset.lower() == 'imagenet':
         # ImageNet has 1000 classes
         class_names = [f"Class_{i}" for i in range(1000)]
