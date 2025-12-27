@@ -13,7 +13,6 @@ from typing import Tuple, Optional, Union
 import numpy as np
 from PIL import Image
 import os
-import io
 import tarfile
 import urllib.request
 from pathlib import Path
@@ -500,46 +499,14 @@ class ImageNet1kParquetDataset(Dataset):
         image = row['image']
         label = row['label']
         
-        # Handle different image formats from parquet
-        if isinstance(image, Image.Image):
-            # Already a PIL Image
-            pass
-        elif isinstance(image, dict) and 'bytes' in image:
-            # Image stored as bytes dictionary (HuggingFace format)
-            image = Image.open(io.BytesIO(image['bytes']))
-        elif isinstance(image, bytes):
-            # Image stored as raw bytes
-            image = Image.open(io.BytesIO(image))
-        elif isinstance(image, np.ndarray):
-            # Image stored as numpy array
-            if image.dtype == np.uint8:
+        # Convert to PIL Image if not already
+        if not isinstance(image, Image.Image):
+            # If it's a numpy array or other format
+            if isinstance(image, np.ndarray):
                 image = Image.fromarray(image)
             else:
-                # Convert to uint8 if needed
-                image = Image.fromarray((image * 255).astype(np.uint8))
-        else:
-            # Try generic conversion - handle any other format
-            try:
-                # If it's some other object type, try to extract the actual image
-                if hasattr(image, 'convert'):
-                    # It might already be a PIL-like object
-                    pass
-                elif hasattr(image, '__array__'):
-                    # Has array interface
-                    arr = np.array(image)
-                    if arr.dtype == object:
-                        # This is the problematic case - image might be nested
-                        # Try to extract the actual image
-                        if hasattr(arr.flat[0], 'convert'):
-                            image = arr.flat[0]
-                        else:
-                            raise ValueError(f"Cannot extract image from object array: {type(arr.flat[0])}")
-                    else:
-                        image = Image.fromarray(arr.astype(np.uint8))
-                else:
-                    raise ValueError(f"Unknown image format: {type(image)}")
-            except Exception as e:
-                raise ValueError(f"Failed to load image at index {idx}. Image type: {type(image)}, Error: {e}")
+                # Try to convert whatever format it is
+                image = Image.fromarray(np.array(image))
         
         # Convert grayscale to RGB if needed
         if image.mode != 'RGB':
