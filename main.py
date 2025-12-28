@@ -226,13 +226,27 @@ def extract_features(args, experiment_dir):
     # Check if we should load pre-extracted features
     if args.load_features:
         print(f"Loading pre-extracted features from {args.load_features}")
+        
+        # Determine the correct paths based on whether load_features is a directory or a file prefix
+        from pathlib import Path
+        features_path = Path(args.load_features)
+        
+        # If it's a directory, look for train_features.pt and test_features.pt inside
+        if features_path.is_dir():
+            train_path = features_path / "train_features.pt"
+            test_path = features_path / "test_features.pt"
+        else:
+            # Otherwise, assume it's a prefix and append _train.pt and _test.pt
+            train_path = Path(str(features_path) + "_train.pt")
+            test_path = Path(str(features_path) + "_test.pt")
+        
         # Use the appropriate feature loader based on model type
         if args.model_type == 'clip':
-            train_data = CLIPFeatureExtractor.load_features(args.load_features + "_train.pt")
-            test_data = CLIPFeatureExtractor.load_features(args.load_features + "_test.pt")
+            train_data = CLIPFeatureExtractor.load_features(str(train_path))
+            test_data = CLIPFeatureExtractor.load_features(str(test_path))
         else:
-            train_data = DINOv2FeatureExtractor.load_features(args.load_features + "_train.pt")
-            test_data = DINOv2FeatureExtractor.load_features(args.load_features + "_test.pt")
+            train_data = DINOv2FeatureExtractor.load_features(str(train_path))
+            test_data = DINOv2FeatureExtractor.load_features(str(test_path))
         
         train_features, train_labels, _ = train_data
         test_features, test_labels, _ = test_data

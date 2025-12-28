@@ -133,7 +133,7 @@ def extract_parquet_to_imagenet_structure(
 def main():
     """Main extraction function."""
     # Configuration
-    parquet_dir = "/home/ssl.distillaition/WMDD/datasets/imagenet_data/data/"
+    parquet_dir = "/home/ssl.distillation/WMDD/datasets/imagenet_data/data/"
     output_dir = "/home/ssl.distillation/WMDD/datasets/imagenet_data"
     
     print("="*60)
