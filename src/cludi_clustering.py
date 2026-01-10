@@ -163,7 +163,7 @@ class CLUDIModel(nn.Module):
         # Cluster centers (learnable)
         self.clusters_centers = nn.Parameter(
             torch.randn(1, num_clusters, embedding_dim)
-        ).requires_grad_(False)
+        ).requires_grad_(True)
         
         # Initialize weights
         self._init_weights()
@@ -219,8 +219,14 @@ class CLUDIModel(nn.Module):
             Embeddings of shape (batch, seq, embedding_dim)
         """
         clusters_centers = F.normalize(self.clusters_centers, dim=-1)
-        weighted_sum = torch.matmul(x, clusters_centers.to(x.dtype))
-        return F.normalize(weighted_sum, dim=-1) * np.sqrt(self.embedding_dim)
+        # Expand x for broadcasting: (batch, seq, num_clusters) -> (batch, seq, num_clusters, 1)
+        x_expanded = x.unsqueeze(-1)
+        # Broadcast multiply: (batch, seq, num_clusters, 1) * (1, num_clusters, embedding_dim)
+        # Results in (batch, seq, num_clusters, embedding_dim)
+        weighted = x_expanded * clusters_centers.to(x.dtype)
+        # Sum over cluster dimension to get weighted embedding
+        weighted_sum = torch.sum(weighted, dim=2)
+        return weighted_sum * np.sqrt(self.embedding_dim)
     
     def forward(
         self,

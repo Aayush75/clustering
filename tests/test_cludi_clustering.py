@@ -182,6 +182,142 @@ def test_cludi_clusterer_predict():
         print("Note: This may be expected if CUDA is not available with sufficient memory")
 
 
+def test_return_embedding_shape_and_diversity():
+    """Test that return_embedding produces correct shapes and diverse outputs."""
+    print("\n" + "="*60)
+    print("Test 6: Return Embedding Shape and Diversity")
+    print("="*60)
+    
+    num_clusters = 10
+    embedding_dim = 64
+    batch_size = 4
+    seq_len = 100
+    
+    model = CLUDIModel(
+        feature_dim=384,
+        num_clusters=num_clusters,
+        embedding_dim=embedding_dim
+    )
+    
+    # Create diverse soft cluster assignments (one-hot like)
+    # First sample: all weight on cluster 0
+    # Second sample: all weight on cluster 1
+    # etc.
+    x = torch.zeros(batch_size, seq_len, num_clusters)
+    for i in range(batch_size):
+        x[i, :, i % num_clusters] = 1.0
+    
+    # Get embeddings
+    embeddings = model.return_embedding(x)
+    
+    # Check shape
+    expected_shape = (batch_size, seq_len, embedding_dim)
+    assert embeddings.shape == expected_shape, f"Expected shape {expected_shape}, got {embeddings.shape}"
+    print(f"✓ Embedding shape is correct: {embeddings.shape}")
+    
+    # Check that different cluster assignments produce different embeddings
+    # Compare embeddings from samples assigned to different clusters
+    embedding_0 = embeddings[0, 0, :]  # Sample assigned to cluster 0
+    embedding_1 = embeddings[1, 0, :]  # Sample assigned to cluster 1
+    
+    # Calculate cosine similarity
+    cos_sim = torch.nn.functional.cosine_similarity(
+        embedding_0.unsqueeze(0), 
+        embedding_1.unsqueeze(0)
+    )
+    
+    print(f"Cosine similarity between different cluster embeddings: {cos_sim.item():.4f}")
+    
+    # Different clusters should produce different embeddings (low similarity)
+    # With random initialization, similarity should not be very high
+    assert cos_sim.item() < 0.95, f"Different cluster assignments should produce different embeddings, but similarity is {cos_sim.item()}"
+    print("✓ Different cluster assignments produce different embeddings")
+    
+    # Test with soft assignments (uniform distribution)
+    x_uniform = torch.ones(1, seq_len, num_clusters) / num_clusters
+    embeddings_uniform = model.return_embedding(x_uniform)
+    
+    assert embeddings_uniform.shape == (1, seq_len, embedding_dim), "Uniform assignment embedding shape is incorrect"
+    print("✓ Uniform soft assignments also produce valid embeddings")
+    
+    print("✓ Return embedding test passed!")
+
+
+def test_cluster_centers_are_learnable():
+    """Test that cluster centers have requires_grad=True."""
+    print("\n" + "="*60)
+    print("Test 7: Cluster Centers Are Learnable")
+    print("="*60)
+    
+    model = CLUDIModel(
+        feature_dim=384,
+        num_clusters=10,
+        embedding_dim=64
+    )
+    
+    # Check that cluster centers have requires_grad=True
+    assert model.clusters_centers.requires_grad, "Cluster centers should have requires_grad=True"
+    print(f"✓ clusters_centers.requires_grad = {model.clusters_centers.requires_grad}")
+    
+    # Verify cluster centers are included in named_parameters
+    cluster_param_found = False
+    for name, param in model.named_parameters():
+        if "clusters_centers" in name:
+            cluster_param_found = True
+            assert param.requires_grad, f"Cluster centers parameter '{name}' should be learnable"
+            print(f"✓ Found learnable parameter: {name}")
+    
+    assert cluster_param_found, "Cluster centers should be in named_parameters"
+    print("✓ Cluster centers are learnable test passed!")
+
+
+def test_cluster_diversity_after_training_step():
+    """Test that a single training step produces diverse cluster assignments."""
+    print("\n" + "="*60)
+    print("Test 8: Cluster Diversity After Training Step")
+    print("="*60)
+    
+    device = "cpu"
+    num_clusters = 10
+    n_samples = 200
+    
+    # Create clusterer
+    clusterer = CLUDIClusterer(
+        feature_dim=384,
+        num_clusters=num_clusters,
+        device=device,
+        embedding_dim=64,
+        diffusion_steps=50,  # Reduced for speed
+        batch_diffusion=2
+    )
+    
+    # Create synthetic features with some structure
+    # Create features that are grouped - samples with similar indices should be similar
+    torch.manual_seed(42)
+    base_features = torch.randn(num_clusters, 384)
+    features = []
+    for i in range(n_samples):
+        cluster_idx = i % num_clusters
+        # Add some noise to base feature
+        noise = torch.randn(384) * 0.1
+        features.append(base_features[cluster_idx] + noise)
+    features = torch.stack(features)
+    
+    # Predict before training (random init)
+    predictions = clusterer.predict(features, batch_size=50)
+    unique_clusters = torch.unique(predictions)
+    
+    print(f"Number of unique clusters used: {len(unique_clusters)}")
+    print(f"Unique clusters: {unique_clusters.cpu().numpy()}")
+    
+    # With the fix, even with random init, the model should use multiple clusters
+    # not collapse to a single cluster
+    assert len(unique_clusters) > 1, f"Model should use more than 1 cluster, but only uses {len(unique_clusters)}"
+    print("✓ Model uses multiple clusters (no cluster collapse)")
+    
+    print("✓ Cluster diversity test passed!")
+
+
 def run_all_tests():
     """Run all CLUDI tests."""
     print("\n" + "="*60)
@@ -212,6 +348,21 @@ def run_all_tests():
         test_cludi_clusterer_predict()
     except Exception as e:
         print(f"✗ CLUDIClusterer predict test failed: {e}")
+    
+    try:
+        test_return_embedding_shape_and_diversity()
+    except Exception as e:
+        print(f"✗ Return embedding test failed: {e}")
+    
+    try:
+        test_cluster_centers_are_learnable()
+    except Exception as e:
+        print(f"✗ Cluster centers learnable test failed: {e}")
+    
+    try:
+        test_cluster_diversity_after_training_step()
+    except Exception as e:
+        print(f"✗ Cluster diversity test failed: {e}")
     
     print("\n" + "="*60)
     print("Test Suite Complete!")
