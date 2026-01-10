@@ -1,6 +1,9 @@
-# TEMI Deep Clustering for Multiple Datasets
+# TEMI and CLUDI Deep Clustering for Multiple Datasets
 
-This repository implements TEMI (Transformation-Equivariant Multi-Instance) clustering on multiple vision datasets using DINOv2, DINOv3, or CLIP features. The implementation follows the methodology from "Self-Supervised Clustering with Deep Learning" (arXiv:2303.17896).
+This repository implements **TEMI** (Transformation-Equivariant Multi-Instance) and **CLUDI** (Clustering via Diffusion) clustering on multiple vision datasets using DINOv2, DINOv3, or CLIP features.
+
+- **TEMI**: Based on "Self-Supervised Clustering with Deep Learning" (arXiv:2303.17896)
+- **CLUDI**: A diffusion-based deep clustering approach using denoising diffusion models
 
 ## Table of Contents
 
@@ -10,6 +13,7 @@ This repository implements TEMI (Transformation-Equivariant Multi-Instance) clus
 - [Project Structure](#project-structure)
 - [Quick Start](#quick-start)
 - [Usage](#usage)
+- [CLUDI Clustering](#cludi-clustering)
 - [Dataset Support](#dataset-support)
 - [Feature Extractors](#feature-extractors)
 - [Cluster Visualization](#cluster-visualization)
@@ -27,7 +31,7 @@ This repository implements TEMI (Transformation-Equivariant Multi-Instance) clus
 The pipeline consists of five main stages:
 
 1. **Feature Extraction**: Extract visual features from dataset images using pre-trained vision models (DINOv2, DINOv3, or CLIP)
-2. **TEMI Clustering**: Train a clustering model using transformation equivariance and multi-instance learning principles
+2. **Clustering**: Train a clustering model using either TEMI (transformation equivariance) or CLUDI (diffusion-based)
 3. **Evaluation**: Assess clustering quality using multiple metrics (accuracy, NMI, ARI)
 4. **Visualization and Pseudo Labeling** (optional): Generate t-SNE/UMAP plots and map clusters to actual labels
 5. **Dataset Distillation** (optional): Create a small synthetic dataset that preserves learning dynamics
@@ -36,10 +40,11 @@ The pipeline consists of five main stages:
 
 - Multiple datasets: CIFAR10, CIFAR100, Tiny ImageNet, ImageNet-1K, and Imagenette
 - Multiple feature extractors: DINOv2, DINOv3, and CLIP models
-- TEMI clustering algorithm following paper specifications
+- **Two clustering algorithms**: TEMI and CLUDI (diffusion-based)
 - Pseudo label generation for interpretability and semi-supervised learning
+- **CSV export of pseudo labels** for downstream tasks
 - Dataset distillation using trajectory matching (arXiv:2406.18561)
-- Checkpoint system for resumable training
+- Comprehensive checkpoint system for resumable training
 - Comprehensive evaluation metrics (accuracy, NMI, ARI)
 - Cluster visualization with t-SNE and UMAP
 - Support for multiple model variants (small, base, large, giant)
@@ -196,6 +201,89 @@ Resume from checkpoint:
 ```bash
 python main.py --resume_from ./checkpoints/experiment/final_checkpoint.pt
 ```
+
+## CLUDI Clustering
+
+CLUDI (Clustering via Diffusion) is a diffusion-based deep clustering algorithm that uses denoising diffusion models for learning cluster-friendly representations.
+
+### Basic CLUDI Usage
+
+```bash
+# Run CLUDI clustering with default settings
+python main.py --clustering_method cludi --dataset cifar100
+
+# CLUDI with pseudo label generation
+python main.py \
+    --clustering_method cludi \
+    --dataset cifar100 \
+    --num_clusters 100 \
+    --num_epochs 100 \
+    --generate_pseudo_labels \
+    --k_samples 10 \
+    --visualize_mapping \
+    --save_features
+```
+
+### CLUDI-Specific Options
+
+| Argument | Default | Description |
+|----------|---------|-------------|
+| `--cludi_embedding_dim` | `64` | Dimension of cluster embeddings |
+| `--cludi_diffusion_steps` | `1000` | Number of diffusion timesteps |
+| `--cludi_batch_diffusion` | `8` | Batch size for diffusion sampling |
+| `--cludi_rescaling_factor` | `49.0` | Noise rescaling factor |
+| `--cludi_ce_lambda` | `50.0` | Cross-entropy loss weight |
+| `--cludi_use_v_prediction` | `True` | Use v-parameterization |
+| `--cludi_warmup_epochs` | `1` | Warmup epochs for learning rate |
+
+### CLUDI Documentation
+
+For comprehensive CLUDI documentation, including:
+- Algorithm details and mathematical foundation
+- Complete pipeline architecture
+- Hyperparameter search (Grid, Random, Bayesian)
+- Checkpointing and recovery
+- CSV output format
+- Troubleshooting guide
+
+See **[docs/CLUDI_DOCUMENTATION.md](docs/CLUDI_DOCUMENTATION.md)**
+
+### Hyperparameter Search
+
+CLUDI supports automated hyperparameter search with three methods:
+
+```bash
+# Random search (recommended for initial exploration)
+python main.py \
+    --clustering_method cludi \
+    --dataset cifar100 \
+    --hyperparam_search \
+    --search_method random \
+    --search_trials 20 \
+    --search_epochs 50 \
+    --search_metric accuracy
+
+# Grid search (exhaustive)
+python main.py \
+    --clustering_method cludi \
+    --hyperparam_search \
+    --search_method grid
+
+# Bayesian optimization (efficient, requires optuna)
+python main.py \
+    --clustering_method cludi \
+    --hyperparam_search \
+    --search_method bayesian \
+    --search_trials 30
+```
+
+| Search Option | Default | Description |
+|--------------|---------|-------------|
+| `--hyperparam_search` | `False` | Enable hyperparameter search |
+| `--search_method` | `random` | Method: `grid`, `random`, `bayesian` |
+| `--search_trials` | `20` | Number of trials (random/bayesian) |
+| `--search_epochs` | `50` | Training epochs per trial |
+| `--search_metric` | `accuracy` | Metric to optimize |
 
 ### Using Pre-extracted Features
 

@@ -652,3 +652,172 @@ def generate_pseudo_labels(
                       f"{torch.max(confidence_scores[valid_mask]).item():.4f}]")
     
     return pseudo_labels, cluster_to_label, k_nearest_indices, confidence_scores, cluster_to_confidence
+
+
+def save_pseudo_labels_to_csv(
+    pseudo_labels: torch.Tensor,
+    cluster_assignments: torch.Tensor,
+    true_labels: torch.Tensor,
+    confidence_scores: Optional[torch.Tensor],
+    output_path: str,
+    image_paths: Optional[List[str]] = None,
+    class_names: Optional[List[str]] = None
+) -> None:
+    """
+    Save pseudo labels to a CSV file for easy inspection and downstream use.
+    
+    This function creates a comprehensive CSV file with:
+    - Sample index
+    - Image path (if provided)
+    - Cluster assignment
+    - Pseudo label
+    - True label
+    - Confidence score
+    - Class names (if provided)
+    
+    Args:
+        pseudo_labels: Pseudo labels for each sample (n_samples,)
+        cluster_assignments: Cluster assignments for each sample (n_samples,)
+        true_labels: True labels for each sample (n_samples,)
+        confidence_scores: Confidence scores for each sample (n_samples,) or None
+        output_path: Path to save the CSV file
+        image_paths: Optional list of image paths for each sample
+        class_names: Optional list of class names for label interpretation
+    """
+    import csv
+    
+    # Convert tensors to numpy
+    if isinstance(pseudo_labels, torch.Tensor):
+        pseudo_labels = pseudo_labels.cpu().numpy()
+    if isinstance(cluster_assignments, torch.Tensor):
+        cluster_assignments = cluster_assignments.cpu().numpy()
+    if isinstance(true_labels, torch.Tensor):
+        true_labels = true_labels.cpu().numpy()
+    if confidence_scores is not None and isinstance(confidence_scores, torch.Tensor):
+        confidence_scores = confidence_scores.cpu().numpy()
+    
+    n_samples = len(pseudo_labels)
+    
+    # Create output directory if needed
+    Path(output_path).parent.mkdir(parents=True, exist_ok=True)
+    
+    # Prepare CSV header
+    header = ['sample_idx', 'cluster_id', 'pseudo_label', 'true_label']
+    if image_paths is not None:
+        header.insert(1, 'image_path')
+    if confidence_scores is not None:
+        header.append('confidence_score')
+    if class_names is not None:
+        header.extend(['pseudo_label_name', 'true_label_name'])
+    header.append('is_correct')
+    
+    # Write CSV
+    with open(output_path, 'w', newline='') as csvfile:
+        writer = csv.DictWriter(csvfile, fieldnames=header)
+        writer.writeheader()
+        
+        for i in range(n_samples):
+            row = {
+                'sample_idx': i,
+                'cluster_id': int(cluster_assignments[i]),
+                'pseudo_label': int(pseudo_labels[i]),
+                'true_label': int(true_labels[i])
+            }
+            
+            if image_paths is not None:
+                row['image_path'] = image_paths[i] if i < len(image_paths) else ''
+            
+            if confidence_scores is not None:
+                row['confidence_score'] = f"{confidence_scores[i]:.4f}"
+            
+            if class_names is not None:
+                pseudo_label_val = int(pseudo_labels[i])
+                true_label_val = int(true_labels[i])
+                row['pseudo_label_name'] = class_names[pseudo_label_val] if 0 <= pseudo_label_val < len(class_names) else 'UNKNOWN'
+                row['true_label_name'] = class_names[true_label_val] if 0 <= true_label_val < len(class_names) else 'UNKNOWN'
+            
+            row['is_correct'] = 1 if pseudo_labels[i] == true_labels[i] else 0
+            
+            writer.writerow(row)
+    
+    print(f"Pseudo labels CSV saved to {output_path}")
+
+
+def save_cluster_mapping_to_csv(
+    cluster_to_label: Dict[int, int],
+    cluster_to_confidence: Dict[int, float],
+    cluster_assignments: torch.Tensor,
+    true_labels: torch.Tensor,
+    output_path: str,
+    class_names: Optional[List[str]] = None
+) -> None:
+    """
+    Save cluster-to-label mapping to a CSV file.
+    
+    This function creates a summary CSV with:
+    - Cluster ID
+    - Mapped pseudo label
+    - Cluster size
+    - Per-cluster accuracy
+    - Confidence score
+    - Class names (if provided)
+    
+    Args:
+        cluster_to_label: Mapping from cluster ID to pseudo label
+        cluster_to_confidence: Mapping from cluster ID to confidence score
+        cluster_assignments: Cluster assignments for each sample
+        true_labels: True labels for each sample
+        output_path: Path to save the CSV file
+        class_names: Optional list of class names
+    """
+    import csv
+    
+    # Convert tensors to numpy if needed
+    if isinstance(cluster_assignments, torch.Tensor):
+        cluster_assignments = cluster_assignments.cpu().numpy()
+    if isinstance(true_labels, torch.Tensor):
+        true_labels = true_labels.cpu().numpy()
+    
+    # Create output directory if needed
+    Path(output_path).parent.mkdir(parents=True, exist_ok=True)
+    
+    # Prepare header
+    header = ['cluster_id', 'pseudo_label', 'cluster_size', 'cluster_accuracy', 'confidence']
+    if class_names is not None:
+        header.append('pseudo_label_name')
+    
+    # Write CSV
+    with open(output_path, 'w', newline='') as csvfile:
+        writer = csv.DictWriter(csvfile, fieldnames=header)
+        writer.writeheader()
+        
+        for cluster_id in sorted(cluster_to_label.keys()):
+            pseudo_label = cluster_to_label[cluster_id]
+            confidence = cluster_to_confidence.get(cluster_id, 0.0)
+            
+            # Compute cluster size and accuracy
+            cluster_mask = cluster_assignments == cluster_id
+            cluster_size = int(np.sum(cluster_mask))
+            
+            if cluster_size > 0 and pseudo_label != NO_PSEUDO_LABEL:
+                cluster_true_labels = true_labels[cluster_mask]
+                cluster_accuracy = float(np.mean(cluster_true_labels == pseudo_label))
+            else:
+                cluster_accuracy = 0.0
+            
+            row = {
+                'cluster_id': cluster_id,
+                'pseudo_label': pseudo_label,
+                'cluster_size': cluster_size,
+                'cluster_accuracy': f"{cluster_accuracy:.4f}",
+                'confidence': f"{confidence:.4f}"
+            }
+            
+            if class_names is not None and 0 <= pseudo_label < len(class_names):
+                row['pseudo_label_name'] = class_names[pseudo_label]
+            elif class_names is not None:
+                row['pseudo_label_name'] = 'UNKNOWN' if pseudo_label == NO_PSEUDO_LABEL else f'class_{pseudo_label}'
+            
+            writer.writerow(row)
+    
+    print(f"Cluster mapping CSV saved to {output_path}")

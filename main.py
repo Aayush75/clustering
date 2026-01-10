@@ -33,9 +33,17 @@ from src.pseudo_labeling import (
     apply_pseudo_labels,
     print_cluster_mapping_summary,
     visualize_cluster_mapping,
-    map_clusters_to_labels
+    map_clusters_to_labels,
+    save_pseudo_labels_to_csv,
+    save_cluster_mapping_to_csv
 )
 from src.dataset_distillation import DatasetDistiller
+from src.cludi_clustering import CLUDIClusterer
+from src.cludi_hyperparam_search import (
+    CLUDIHyperparameterSearch,
+    CLUDIHyperparameterSpace,
+    run_cludi_hyperparam_search
+)
 
 
 def parse_arguments():
@@ -46,7 +54,7 @@ def parse_arguments():
         Parsed arguments object
     """
     parser = argparse.ArgumentParser(
-        description='TEMI Clustering on CIFAR100 with DINOv2, DINOv3, or CLIP',
+        description='TEMI/CLUDI Clustering on CIFAR100 with DINOv2, DINOv3, or CLIP',
         formatter_class=argparse.ArgumentDefaultsHelpFormatter
     )
     
@@ -89,6 +97,27 @@ def parse_arguments():
                         help='Use Sinkhorn-Knopp normalization to prevent cluster collapse')
     parser.add_argument('--no_sinkhorn', dest='use_sinkhorn', action='store_false',
                         help='Disable Sinkhorn-Knopp normalization')
+    
+    # Clustering algorithm selection
+    parser.add_argument('--clustering_method', type=str, default='temi',
+                        choices=['temi', 'cludi'],
+                        help='Clustering algorithm to use (temi or cludi)')
+    
+    # CLUDI-specific arguments
+    parser.add_argument('--cludi_embedding_dim', type=int, default=64,
+                        help='CLUDI: Embedding dimension for cluster representations')
+    parser.add_argument('--cludi_diffusion_steps', type=int, default=1000,
+                        help='CLUDI: Number of diffusion timesteps')
+    parser.add_argument('--cludi_batch_diffusion', type=int, default=8,
+                        help='CLUDI: Batch size for diffusion sampling')
+    parser.add_argument('--cludi_rescaling_factor', type=float, default=49.0,
+                        help='CLUDI: Rescaling factor for diffusion')
+    parser.add_argument('--cludi_ce_lambda', type=float, default=50.0,
+                        help='CLUDI: Weight for cross-entropy loss')
+    parser.add_argument('--cludi_use_v_prediction', action='store_true', default=True,
+                        help='CLUDI: Use v-parameterization for diffusion')
+    parser.add_argument('--cludi_warmup_epochs', type=int, default=1,
+                        help='CLUDI: Number of warmup epochs')
     
     # Checkpoint and resume arguments
     parser.add_argument('--checkpoint_dir', type=str, default='./checkpoints',
@@ -144,6 +173,22 @@ def parse_arguments():
                         choices=['random', 'margin'],
                         help='Strategy for initializing synthetic data (default: random).')
     
+    # Hyperparameter search arguments (CLUDI)
+    parser.add_argument('--hyperparam_search', action='store_true',
+                        help='Perform hyperparameter search for CLUDI')
+    parser.add_argument('--search_method', type=str, default='random',
+                        choices=['grid', 'random', 'bayesian'],
+                        help='Hyperparameter search method')
+    parser.add_argument('--search_trials', type=int, default=20,
+                        help='Number of trials for random/bayesian search')
+    parser.add_argument('--search_epochs', type=int, default=50,
+                        help='Training epochs per search trial')
+    parser.add_argument('--search_metric', type=str, default='accuracy',
+                        choices=['accuracy', 'nmi', 'ari'],
+                        help='Metric to optimize during search')
+    parser.add_argument('--search_seed', type=int, default=None,
+                        help='Random seed for hyperparameter search')
+    
     # Device arguments
     parser.add_argument('--device', type=str, default='cuda',
                         choices=['cuda', 'cpu'],
@@ -183,7 +228,9 @@ def setup_directories(args):
     # Generate experiment name if not provided
     if args.experiment_name is None:
         timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
-        args.experiment_name = f"temi_{args.dataset}_{args.num_clusters}clusters_{timestamp}"
+        # Use clustering_method directly since it has a default value in argument parser
+        method = args.clustering_method
+        args.experiment_name = f"{method}_{args.dataset}_{args.num_clusters}clusters_{timestamp}"
     
     # Create experiment subdirectory in results
     experiment_dir = Path(args.results_dir) / args.experiment_name
@@ -375,6 +422,213 @@ def train_temi_clustering(args, train_features, experiment_dir):
     clusterer.save_checkpoint(str(checkpoint_path), args.num_epochs, history)
     
     return clusterer
+
+
+def train_cludi_clustering(args, train_features, experiment_dir):
+    """
+    Train the CLUDI clustering model.
+    
+    CLUDI (Clustering via Diffusion) uses a diffusion-based approach to
+    learn cluster-friendly representations through self-supervised denoising.
+    
+    Args:
+        args: Parsed command line arguments
+        train_features: Training features from DINOv2/CLIP
+        experiment_dir: Directory for this experiment
+        
+    Returns:
+        Trained CLUDIClusterer object
+    """
+    print("\n" + "="*60)
+    print("Step 2: CLUDI Clustering (Diffusion-based)")
+    print("="*60)
+    
+    # Get feature dimension
+    feature_dim = train_features.shape[1]
+    
+    print(f"Feature dimension: {feature_dim}")
+    print(f"Number of clusters: {args.num_clusters}")
+    print(f"Embedding dimension: {args.cludi_embedding_dim}")
+    print(f"Diffusion steps: {args.cludi_diffusion_steps}")
+    
+    # Initialize CLUDI clusterer
+    clusterer = CLUDIClusterer(
+        feature_dim=feature_dim,
+        num_clusters=args.num_clusters,
+        device=args.device,
+        embedding_dim=args.cludi_embedding_dim,
+        learning_rate=args.learning_rate,
+        diffusion_steps=args.cludi_diffusion_steps,
+        batch_diffusion=args.cludi_batch_diffusion,
+        rescaling_factor=args.cludi_rescaling_factor,
+        ce_lambda=args.cludi_ce_lambda,
+        use_v_prediction=args.cludi_use_v_prediction,
+        warmup_epochs=args.cludi_warmup_epochs
+    )
+    
+    # Check if resuming from checkpoint
+    start_epoch = 0
+    history = None
+    
+    if args.resume_from:
+        print(f"Resuming from checkpoint: {args.resume_from}")
+        start_epoch, history = clusterer.load_checkpoint(args.resume_from)
+        print(f"Resuming from epoch {start_epoch}")
+    
+    # Train the clustering model
+    if start_epoch < args.num_epochs:
+        remaining_epochs = args.num_epochs - start_epoch
+        
+        # Create checkpoint directory
+        checkpoint_dir = experiment_dir / "checkpoints"
+        checkpoint_dir.mkdir(exist_ok=True)
+        
+        new_history = clusterer.fit(
+            features=train_features,
+            num_epochs=remaining_epochs,
+            batch_size=args.batch_size,
+            verbose=True,
+            save_checkpoints=True,
+            checkpoint_dir=str(checkpoint_dir),
+            checkpoint_freq=20
+        )
+        
+        # Merge histories if resuming
+        if history is not None:
+            for key in history.keys():
+                if key in new_history:
+                    history[key].extend(new_history[key])
+        else:
+            history = new_history
+    
+    # Save final checkpoint
+    checkpoint_path = experiment_dir / "final_checkpoint.pt"
+    clusterer.save_checkpoint(str(checkpoint_path), args.num_epochs, history)
+    
+    return clusterer
+
+
+def run_cludi_hyperparameter_search(args, train_features, train_labels, experiment_dir):
+    """
+    Run hyperparameter search for CLUDI clustering.
+    
+    This function performs hyperparameter optimization using the specified
+    search method (grid, random, or bayesian) and saves results.
+    
+    Args:
+        args: Parsed command line arguments
+        train_features: Training features
+        train_labels: Training labels
+        experiment_dir: Directory for this experiment
+        
+    Returns:
+        Tuple of (best_params, best_clusterer)
+    """
+    print("\n" + "="*60)
+    print("CLUDI Hyperparameter Search")
+    print("="*60)
+    
+    # Get feature dimension
+    feature_dim = train_features.shape[1]
+    
+    print(f"Feature dimension: {feature_dim}")
+    print(f"Number of clusters: {args.num_clusters}")
+    print(f"Search method: {args.search_method}")
+    print(f"Number of trials: {args.search_trials}")
+    print(f"Epochs per trial: {args.search_epochs}")
+    print(f"Metric to optimize: {args.search_metric}")
+    
+    # Create search space with CLUDI hyperparameters
+    search_space = CLUDIHyperparameterSpace(
+        embedding_dim=[32, 64, 128],
+        learning_rate=(1e-5, 1e-3),  # Log-scale sampling
+        diffusion_steps=[500, 750, 1000],
+        batch_diffusion=[4, 8, 16],
+        rescaling_factor=[25.0, 49.0, 100.0],
+        ce_lambda=[25.0, 50.0, 75.0, 100.0],
+        warmup_epochs=[0, 1, 2]
+    )
+    
+    # Create search results directory
+    search_results_dir = experiment_dir / "hyperparam_search"
+    search_results_dir.mkdir(exist_ok=True)
+    
+    # Initialize searcher
+    searcher = CLUDIHyperparameterSearch(
+        feature_dim=feature_dim,
+        num_clusters=args.num_clusters,
+        device=args.device,
+        metric=args.search_metric,
+        results_dir=str(search_results_dir)
+    )
+    
+    # Run search
+    best_params, results = searcher.search(
+        features=train_features,
+        labels=train_labels,
+        search_space=search_space,
+        method=args.search_method,
+        n_trials=args.search_trials,
+        num_epochs=args.search_epochs,
+        batch_size=args.batch_size,
+        verbose=True,
+        seed=args.search_seed
+    )
+    
+    # Print summary
+    searcher.print_summary()
+    
+    # Save best parameters to config
+    best_params_path = experiment_dir / "best_hyperparameters.json"
+    with open(best_params_path, 'w') as f:
+        json.dump({
+            'best_params': best_params,
+            'search_method': args.search_method,
+            'n_trials': args.search_trials,
+            'metric': args.search_metric,
+            'best_score': searcher.best_result.metrics.get(args.search_metric, 0) if searcher.best_result else None
+        }, f, indent=2)
+    print(f"\nBest hyperparameters saved to {best_params_path}")
+    
+    # Train final model with best parameters
+    print("\n" + "="*60)
+    print("Training Final Model with Best Hyperparameters")
+    print("="*60)
+    
+    final_clusterer = CLUDIClusterer(
+        feature_dim=feature_dim,
+        num_clusters=args.num_clusters,
+        device=args.device,
+        embedding_dim=best_params.get('embedding_dim', 64),
+        learning_rate=best_params.get('learning_rate', 0.0001),
+        diffusion_steps=best_params.get('diffusion_steps', 1000),
+        batch_diffusion=best_params.get('batch_diffusion', 8),
+        rescaling_factor=best_params.get('rescaling_factor', 49.0),
+        ce_lambda=best_params.get('ce_lambda', 50.0),
+        use_v_prediction=True,
+        warmup_epochs=best_params.get('warmup_epochs', 1)
+    )
+    
+    # Create checkpoint directory
+    checkpoint_dir = experiment_dir / "checkpoints"
+    checkpoint_dir.mkdir(exist_ok=True)
+    
+    # Train with full epochs
+    history = final_clusterer.fit(
+        features=train_features,
+        num_epochs=args.num_epochs,
+        batch_size=args.batch_size,
+        verbose=True,
+        save_checkpoints=True,
+        checkpoint_dir=str(checkpoint_dir),
+        checkpoint_freq=20
+    )
+    
+    # Save final checkpoint
+    checkpoint_path = experiment_dir / "final_checkpoint.pt"
+    final_clusterer.save_checkpoint(str(checkpoint_path), args.num_epochs, history)
+    
+    return final_clusterer
 
 
 def evaluate_results(args, clusterer, train_features, train_labels, 
@@ -619,6 +873,51 @@ def generate_and_save_pseudo_labels(
         json.dump(results, f, indent=4)
     print(f"\nPseudo labels saved to {results_path}")
     
+    # Save CSV files for pseudo labels
+    print("\nGenerating CSV files for pseudo labels...")
+    
+    # Save training pseudo labels CSV
+    train_csv_path = pseudo_labels_dir / f"train_pseudo_labels_k{args.k_samples}.csv"
+    save_pseudo_labels_to_csv(
+        pseudo_labels=train_pseudo_labels,
+        cluster_assignments=train_predictions,
+        true_labels=train_labels,
+        confidence_scores=train_confidence,
+        output_path=str(train_csv_path),
+        class_names=class_names
+    )
+    
+    # Save test pseudo labels CSV
+    test_csv_path = pseudo_labels_dir / f"test_pseudo_labels_k{args.k_samples}.csv"
+    # For test set, we need to compute confidence differently since we use training mapping
+    test_confidence = None
+    if train_confidence is not None:
+        # Compute test confidence using training cluster confidences
+        test_confidence = torch.zeros(len(test_predictions), device=test_predictions.device)
+        for i, cluster_id in enumerate(test_predictions):
+            cluster_id_int = int(cluster_id.item())
+            test_confidence[i] = train_cluster_confidence.get(cluster_id_int, 0.0)
+    
+    save_pseudo_labels_to_csv(
+        pseudo_labels=test_pseudo_labels,
+        cluster_assignments=test_predictions,
+        true_labels=test_labels,
+        confidence_scores=test_confidence,
+        output_path=str(test_csv_path),
+        class_names=class_names
+    )
+    
+    # Save cluster mapping CSV
+    cluster_mapping_csv_path = pseudo_labels_dir / f"cluster_mapping_k{args.k_samples}.csv"
+    save_cluster_mapping_to_csv(
+        cluster_to_label=train_cluster_to_label,
+        cluster_to_confidence=train_cluster_confidence,
+        cluster_assignments=train_predictions,
+        true_labels=train_labels,
+        output_path=str(cluster_mapping_csv_path),
+        class_names=class_names
+    )
+    
     # Generate visualization if requested
     if args.visualize_mapping:
         print("\nGenerating cluster-to-label mapping visualization...")
@@ -663,12 +962,12 @@ def generate_and_save_pseudo_labels(
 
 def main():
     """
-    Main function to run the complete TEMI clustering pipeline.
+    Main function to run the complete TEMI/CLUDI clustering pipeline.
     
     This function coordinates all steps:
     1. Parse arguments and setup directories
     2. Extract features using DINOv2/DINOv3 or CLIP
-    3. Train TEMI clustering model
+    3. Train TEMI or CLUDI clustering model
     4. Evaluate and save results
     """
     # Parse arguments
@@ -684,10 +983,12 @@ def main():
     # Print experiment configuration
     model_name = "CLIP" if args.model_type == 'clip' else "DINOv2/DINOv3"
     dataset_name = args.dataset.upper()
+    clustering_method = args.clustering_method.upper()
     print("\n" + "="*60)
-    print(f"TEMI Clustering on {dataset_name} with {model_name}")
+    print(f"{clustering_method} Clustering on {dataset_name} with {model_name}")
     print("="*60)
     print(f"Dataset: {dataset_name}")
+    print(f"Clustering method: {clustering_method}")
     print(f"Model type: {args.model_type}")
     print(f"Number of clusters: {args.num_clusters}")
     if args.model_type == 'clip':
@@ -703,8 +1004,16 @@ def main():
         args, experiment_dir
     )
     
-    # Step 2: Train TEMI clustering
-    clusterer = train_temi_clustering(args, train_features, experiment_dir)
+    # Step 2: Train clustering model (TEMI or CLUDI) or run hyperparameter search
+    if args.hyperparam_search and args.clustering_method == 'cludi':
+        # Run hyperparameter search for CLUDI
+        clusterer = run_cludi_hyperparameter_search(
+            args, train_features, train_labels, experiment_dir
+        )
+    elif args.clustering_method == 'cludi':
+        clusterer = train_cludi_clustering(args, train_features, experiment_dir)
+    else:
+        clusterer = train_temi_clustering(args, train_features, experiment_dir)
     
     # Step 3: Evaluate results
     evaluate_results(
